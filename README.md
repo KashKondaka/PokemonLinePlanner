@@ -1,102 +1,124 @@
-Poke Fight Planner
+Of course\! Here is your README, updated with Markdown for a clean, professional look.
 
-Plan Pokémon battles with real, reproducible damage rolls.
-Upload your teams, run calcs with the Smogon damage engine, apply rolls turn-by-turn, and track items/status (including berries that auto-consume at thresholds).
+# Poke Fight Planner
 
-Requirements
+> Plan Pokémon battles with real, reproducible damage rolls. Upload your teams, run calcs with the Smogon damage engine, apply rolls turn-by-turn, and track items/status (including berries that auto-consume at thresholds).
 
-Node.js 18+ (recommended)
+-----
 
-npm 9+
+## 📋 Table of Contents
 
-Check versions:
+  * [Requirements](https://www.google.com/search?q=%23-requirements)
+  * [Quick Start](https://www.google.com/search?q=%23-quick-start)
+  * [What’s in the Box](https://www.google.com/search?q=%23-whats-in-the-box)
+  * [How It Works](https://www.google.com/search?q=%23-how-it-works)
+  * [File Formats](https://www.google.com/search?q=%23-file-formats)
+  * [Berries, Status & Turn Logic](https://www.google.com/search?q=%23-berries-status--turn-logic)
+  * [API Reference](https://www.google.com/search?q=%23-api-reference)
+  * [Scripts](https://www.google.com/search?q=%23-scripts)
+  * [Troubleshooting](https://www.google.com/search?q=%23-troubleshooting)
+  * [Development Tips](https://www.google.com/search?q=%23-development-tips)
 
+-----
+
+## ✅ Requirements
+
+  * **Node.js**: 18+ (recommended)
+  * **npm**: 9+
+
+Check your versions with:
+
+```bash
 node -v
 npm -v
+```
 
-Quick Start
+-----
 
-Install dependencies
+## ⚡ Quick Start
 
-npm install
+1.  **Install dependencies:**
 
+    ```bash
+    npm install
+    ```
 
-Run the API server (Express + ts-node)
+2.  **Run the API server** (Express + ts-node):
 
-npm run server
+    ```bash
+    npm run server
+    ```
 
+      * Defaults to `http://localhost:3001`.
+      * Override the port with an environment variable: `PORT=4000 npm run server`
 
-Defaults to http://localhost:3001
+3.  **Run the web app:**
 
-PORT can be overridden with an env var:
+    ```bash
+    npm run dev
+    ```
 
-PORT=4000 npm run server
+      * Usually starts on `http://localhost:5173` (Vite default).
+      * The web app calls the API at `/api/calc`. This works via proxy out of the box. Otherwise, ensure the frontend targets the correct API address.
 
+-----
 
-Run the web app
+## 📦 What’s in the Box
 
-npm run dev
+  * **Frontend** (React + TypeScript): The battle planner UI.
 
+      * `src/App.tsx` – Main planner UI (teams, turn list, rolls).
+      * `src/components/TeamBox.tsx` – Party UI with HP bars, items, and status.
+      * `src/components/QueryEditor.tsx` – Input for `"<attacker> use <move> on <defender>"`.
+      * `src/logic/*` – Parsers, grammar, and HP/berry math.
 
-Usually starts on http://localhost:5173 (Vite default).
+  * **Backend** (Express + TypeScript):
 
-The web app talks to the API at /api/calc (same origin if you proxy; otherwise ensure the frontend is configured to hit localhost:3001).
+      * `src/server.ts` – The `/api/calc` endpoint.
+      * `src/damage.ts` – A wrapper around `@smogon/calc`.
+      * `src/parser.ts`, `src/types.ts` – Parsing logic and types.
 
-What’s in the Box
+-----
 
-Frontend (React + TypeScript): battle planner UI
+## ⚙️ How It Works
 
-src/App.tsx – main planner UI (teams, turn list, rolls)
+1.  **Upload two files** in the UI:
 
-src/components/TeamBox.tsx – party UI with HP bars, items, status
+      * `myteam.txt` – Your team in Showdown format.
+      * `enemytrainer.txt` – The opponent's team in a compact line format.
 
-src/components/QueryEditor.tsx – input for “<attacker> use <move> on <defender>”
+2.  The **frontend sends** a request to the API:
 
-src/logic/* – parsers, grammar, HP/berry math
+    ```json
+    {
+      "gen": 9,
+      "myText": "<contents of myteam.txt>",
+      "enemyText": "<normalized contents of enemytrainer.txt>",
+      "attacker": "Kubfu",
+      "move": "Brick Break",
+      "defender": "Eelektrik"
+    }
+    ```
 
-Backend (Express + TypeScript):
+3.  The **server** uses `@smogon/calc` to compute damage and returns the results.
 
-src/server.ts – /api/calc endpoint
+4.  The **UI then**:
 
-src/damage.ts – wrapper around @smogon/calc
+      * Converts the damage values to reflect the Pokémon's *current* HP.
+      * Previews status effects or berry consumption.
+      * Lets you apply a roll, which updates the party's state for the next turn.
 
-src/parser.ts, src/types.ts – parsing & types
+-----
 
-Running Calcs (How it Works)
+## 📁 File Formats
 
-Upload two files in the UI:
+### `myteam.txt` (Showdown format)
 
-myteam.txt – Showdown format (full sets, IVs, EVs, level, nature, ability, item, moves)
+Your team uses the IVs, EVs, nature, ability, and item exactly as provided. Items listed here will enable planner features (e.g., Sitrus/Oran berry previews).
 
-enemytrainer.txt – compact line format (see below)
+**Example:**
 
-The frontend queries POST /api/calc with:
-
-{
-  "gen": 9,
-  "myText": "<contents of myteam.txt>",
-  "enemyText": "<normalized contents of enemytrainer.txt>",
-  "attacker": "Kubfu",
-  "move": "Brick Break",
-  "defender": "Eelektrik"
-}
-
-
-The server uses @smogon/calc to compute damage and returns both damage and remaining values plus a debug block.
-
-The UI then:
-
-Converts remaining-from-full to damage-from-current,
-
-Applies status/berry previews,
-
-Lets you apply a roll so the party HP updates for the next turn.
-
-File Formats
-myteam.txt (Showdown format)
-
-Example block:
-
+```
 Staryu @ Oran Berry
 Ability: Natural Cure
 Level: 25
@@ -106,53 +128,54 @@ IVs: 4 HP / 31 Atk / 21 Def / 23 SpA / 0 SpD / 30 Spe
 - Rapid Spin
 - Psybeam
 - Aurora Beam
+```
 
+*Multiple Pokémon are separated by a blank line.*
 
-Multiple Pokémon are separated by a blank line.
+### `enemytrainer.txt` (compact format)
 
-Notes
+Each Pokémon is on a single line. The planner auto-fills the enemy team from the first 6 lines of this file.
 
-Your team uses the IVs and EVs exactly as provided in myteam.txt.
+**Example:**
 
-Items here affect planner behavior (e.g., Sitrus/Oran preview & consumption).
-
-enemytrainer.txt (line-based compact format)
-
-One line per Pokémon:
-
+```
 Scraggy Lv.21 @Eviolite: Feint Attack, Power Up Punch, Rock Tomb, Rest [Impish|Shed Skin]
+```
 
+*The item (`@...`), moves (`:`), and details (`[...]`) are all optional.*
 
-Item is optional. Everything after : is a comma-separated move list.
+-----
 
-The planner auto-fills the Enemy Team from the first 6 lines.
+## 🍓 Berries, Status & Turn Logic
 
-Berries, Status & Turn Logic
+  * **Berries Supported:**
 
-Berries supported in planner logic:
+      * **Oran Berry**: Restores 10 HP if remaining HP is ≤ 50%.
+      * **Sitrus Berry**: Restores 25% max HP if remaining HP is ≤ 50% (Gen 4+).
 
-Oran: +10 HP if remaining ≤ 50% (Gen-aware threshold)
+  * **Consumption Rules:**
 
-Sitrus: +25% HP if remaining ≤ 50% (Gen 4+)
+      * If a damage roll triggers a berry, it’s marked as **consumed** for the rest of the battle.
+      * If you select a different damage roll *within the same turn*, the app automatically **rolls back** the previous state change, ensuring berries are only consumed if the new roll also crosses the threshold.
 
-Consumption rules
+  * **Status from Moves:** The app will preview and apply status effects.
 
-If a roll procs a berry, it’s consumed once and won’t proc on later turns.
+      * `Will-O-Wisp` → **BRN**
+      * `Thunder Wave`/`Nuzzle` → **PAR**
+      * `Toxic` → **TOX**
+      * `Poison Gas`/`Poison Powder` → **PSN**
 
-If you switch rolls within the same turn, the app first rolls back the previous click (HP, status, berry consumed flag) and then applies the new roll.
-→ This guarantees “unconsume on switch” behavior: if the new roll doesn’t proc, the berry is restored to unconsumed.
+*End-of-turn residual damage (Burn, Poison, Toxic) is previewed and applied after any berry healing.*
 
-Status from moves (preview & apply):
+-----
 
-Will-O-Wisp → BRN, Thunder Wave/Nuzzle → PAR, Toxic → TOX, Poison Gas/Powder → PSN
+## 🌐 API Reference
 
-End-of-turn residual (Burn/Psn/Toxic) is previewed and applied after berry healing.
+### `POST /api/calc`
 
-API Reference
-POST /api/calc
+#### Body
 
-Body
-
+```json
 {
   "gen": 9,
   "myText": "string",
@@ -165,10 +188,11 @@ Body
     "defender": { "item": "string", "status": "brn|par|psn|tox|frz|slp" }
   }
 }
+```
 
+#### Response (excerpt)
 
-Response (excerpt)
-
+```json
 {
   "defender": "Eelektrik",
   "defenderMaxHP": 70,
@@ -176,14 +200,15 @@ Response (excerpt)
   "remaining": { "lowPct": 60, "lowHP": 42, "highPct": 66, "highHP": 46, "critPct": 40, "critHP": 28 },
   "debug": { "...": "stats, rolls, desc" }
 }
+```
 
+**Note:** `damage` is calculated from full HP, while the frontend subtracts from the Pokémon's *current* HP to show the correct post-hit values.
 
-damage is from full HP (how much is dealt).
+-----
 
-remaining is from full HP (how much is left).
-The frontend subtracts from current HP to show the correct post-hit values.
+## 📜 Scripts
 
-Scripts
+```bash
 # Start API only (Express + ts-node)
 npm run server
 
@@ -195,26 +220,30 @@ npm run typecheck
 
 # (optional) Build frontend
 npm run build
+```
 
+*If `typecheck` or `build` are not in your `package.json`, add them based on your project setup (Vite, Create React App, etc.).*
 
-If you don’t have typecheck/build in package.json, add them for your setup (Vite/Cra/etc.).
+-----
 
-Troubleshooting
+## 🔍 Troubleshooting
 
-TS2339 / missing property errors
-Make sure your src/server.ts matches the current code in the repo (some fields like makesContact were removed from the debug echo).
+### TS2339 / missing property errors
 
-API builds but calc looks wrong
-Check the console’s [calc] ... debug output. Confirm that your myteam IVs/EVs are present (the app preserves parsed values and does not force 31).
+Ensure `src/server.ts` matches the current repository code. Some debug fields may have been removed or changed in newer versions.
 
-Berries not consuming
-Click a roll that clearly crosses the berry threshold from the current HP. Switching rolls in the same turn should “unconsume” automatically.
+### API builds but calculations look wrong
 
-Development Tips
+Check the `[calc] ...` debug output in your server console. Confirm that your IVs/EVs from `myteam.txt` are being used correctly.
 
-The UI shows your current party HP after each applied roll.
-Turn 2 calcs start from that updated state.
+### Berries not consuming
 
-Enemy items are inferred from enemytrainer.txt when possible; you can still override items/status on your side in the UI.
+Click a damage roll that clearly crosses the 50% HP threshold *from the Pokémon's current HP*. Remember that switching rolls in the same turn will "unconsume" and re-evaluate the berry condition.
 
-The server is stateless; all state lives in the UI.
+-----
+
+## 💡 Development Tips
+
+  * The UI shows your party's current HP after each applied roll. The next turn's calculations will be based on that updated state.
+  * Enemy items are inferred from `enemytrainer.txt` when possible, but you can always override items and status for any Pokémon directly in the UI.
+  * The server is **stateless**; all battle state (HP, status, consumed items) lives in the UI.
