@@ -49,9 +49,6 @@ npm -v
     npm run server
     ```
 
-      * Defaults to `http://localhost:3001`.
-      * Override the port with an environment variable: `PORT=4000 npm run server`
-
 3.  **Run the web app:**
 
     ```bash
