@@ -1,0 +1,119 @@
+Staryu @ Oran Berry
+Ability: Natural Cure
+Level: 25
+Calm Nature
+IVs: 4 HP / 31 Atk / 21 Def / 23 SpA / 0 SpD / 30 Spe
+- Water Pulse
+- Rapid Spin
+- Psybeam
+- Aurora Beam
+
+Farfetch’d-Galar
+Ability: Inner Focus
+Level: 25
+Quirky Nature
+IVs: 8 HP / 14 Atk / 24 Def / 16 SpA / 18 SpD / 21 Spe
+- Pluck
+- Detect
+- Brutal Swing
+- Rock Smash
+
+Lombre
+Ability: Rain Dish
+Level: 25
+Docile Nature
+IVs: 20 HP / 7 Atk / 5 Def / 15 SpA / 6 SpD / 1 Spe
+- Mega Drain
+- Fake Out
+- Bubble Beam
+- Growl
+
+Tentacool @ Oran Berry
+Ability: Liquid Ooze
+Level: 25
+Rash Nature
+IVs: 29 HP / 31 Atk / 26 Def / 13 SpA / 17 SpD / 29 Spe
+- Acid Spray
+- Brine
+- Confuse Ray
+- Wrap
+
+Eelektrik
+Ability: Levitate
+Level: 25
+Calm Nature
+IVs: 12 HP / 19 Atk / 7 Def / 2 SpA / 29 SpD / 21 Spe
+- Thunder Wave
+- Thunder Punch
+- Shock Wave
+- Crunch
+
+Krabby
+Ability: Sheer Force
+Level: 25
+Brave Nature
+IVs: 16 HP / 0 Atk / 23 Def / 14 SpA / 14 SpD / 14 Spe
+- Metal Claw
+- Brick Break
+- Aerial Ace
+- Aqua Jet
+
+Ponyta @ Oran Berry
+Ability: Flame Body
+Level: 25
+Rash Nature
+IVs: 0 HP / 16 Atk / 6 Def / 20 SpA / 23 SpD / 5 Spe
+- Flame Wheel
+- Fire Spin
+- Bounce
+- Growl
+
+Vivillon @ Oran Berry
+Ability: Shield Dust
+Level: 25
+Timid Nature
+IVs: 13 HP / 12 Atk / 19 Def / 15 SpA / 20 SpD / 25 Spe
+- Air Cutter
+- Draining Kiss
+- Signal Beam
+- Protect
+
+Grotle
+Ability: Shell Armor
+Level: 25
+Lax Nature
+IVs: 31 HP / 31 Atk / 19 Def / 3 SpA / 6 SpD / 31 Spe
+- Mega Drain
+- Razor Leaf
+- Bite
+- Sand Tomb
+
+Seadra
+Ability: Poison Point
+Level: 25
+Hardy Nature
+IVs: 29 HP / 14 Atk / 18 Def / 9 SpA / 31 SpD / 12 Spe
+- Bubble Beam
+- Aurora Beam
+- Clear Smog
+- Twister
+
+Staravia
+Ability: Intimidate
+Level: 25
+Gentle Nature
+IVs: 14 HP / 22 Atk / 19 Def / 14 SpA / 14 SpD / 28 Spe
+- Aerial Ace
+- Growl
+- Quick Attack
+- Endeavor
+
+Togedemaru
+Ability: Iron Barbs
+Level: 25
+Naughty Nature
+IVs: 13 HP / 17 Atk / 7 Def / 16 SpA / 25 SpD / 16 Spe
+- Spark
+- Nuzzle
+- Metal Claw
+- Fake Out

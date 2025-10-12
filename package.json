@@ -1,0 +1,30 @@
+{
+  "name": "poke-fight-planner",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node src/cli.ts",
+    "build": "tsc",
+    "run": "node dist/cli.js",
+    "server": "ts-node src/server.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@pkmn/data": "0.9.38",
+    "@pkmn/dex": "0.9.38",
+    "@pkmn/sets": "5.2.0",
+    "@smogon/calc": "0.10.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "24.7.2",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  }
+}

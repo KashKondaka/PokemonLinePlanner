@@ -1,0 +1,4 @@
+@import "tailwindcss";
+/* Optional global tweaks that don't use @apply */
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; }
