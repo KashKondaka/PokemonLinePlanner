@@ -39,6 +39,17 @@ import {
   getWeatherDamage,
   isImmuneToWeatherDamage,
 } from './logic/weather';
+import {
+  type ScreenType,
+  type ScreenState,
+  getScreenFromMove,
+  getScreenSymbol,
+  getScreenName,
+  getScreenDescription,
+  advanceScreen,
+  SCREEN_DURATION,
+  doesScreenAffectAttack,
+} from './logic/screens';
 
 /* ===================== Local types ===================== */
 
@@ -167,6 +178,10 @@ type TurnLine = {
 
   // Weather state for this turn
   weather?: WeatherState | null;
+  
+  // Screen states for this turn (multiple screens can be active)
+  myScreens?: ScreenState[]; // Screens set up by my team
+  enemyScreens?: ScreenState[]; // Screens set up by enemy team
 };
 
 type CalcResponse = {
@@ -184,6 +199,7 @@ export default function App() {
   const [enemyText, setEnemyText] = useState('');
   const [gen, setGen] = useState<number>(9);
   const [runAndBun, setRunAndBun] = useState<boolean>(false); // Weather lasts indefinitely if true
+  const [battleMode, setBattleMode] = useState<'singles' | 'doubles'>('singles'); // Battle format
 
   const dicts = useMemo<Dictionaries>(() => buildDictionaries(myText, enemyText), [myText, enemyText]);
 
@@ -542,6 +558,82 @@ export default function App() {
         };
       }
       
+      // Carry forward screens from previous turn and advance their duration
+      let myScreens: ScreenState[] = [];
+      let enemyScreens: ScreenState[] = [];
+      
+      if (i > 0 && turns[i - 1].myScreens) {
+        myScreens = turns[i - 1].myScreens
+          .map(advanceScreen)
+          .filter((s): s is ScreenState => s !== null);
+      }
+      
+      if (i > 0 && turns[i - 1].enemyScreens) {
+        enemyScreens = turns[i - 1].enemyScreens
+          .map(advanceScreen)
+          .filter((s): s is ScreenState => s !== null);
+      }
+      
+      // Check if the move sets up a screen
+      const screenType = getScreenFromMove(base.move);
+      if (screenType) {
+        // Determine which team is using the screen
+        const attackerIsMyTeam = myTeam.some(m => 
+          m?.name && resolveCanonicalName(m.name, dicts) === attackerCanon
+        );
+        
+        const newScreen: ScreenState = {
+          type: screenType,
+          userTeam: attackerIsMyTeam ? 'my' : 'enemy',
+          turnsRemaining: SCREEN_DURATION,
+          startedOnTurn: i + 1,
+        };
+        
+        if (attackerIsMyTeam) {
+          // Remove any existing screen of the same type, then add new one
+          myScreens = myScreens.filter(s => s.type !== screenType);
+          myScreens.push(newScreen);
+        } else {
+          enemyScreens = enemyScreens.filter(s => s.type !== screenType);
+          enemyScreens.push(newScreen);
+        }
+        
+        // For screen moves, return early with a message (like stat-changing moves)
+        setTurns(prev => prev.map((x, idx) => idx === i ? ({
+          ...x,
+          loading: false,
+          error: null,
+          result: {
+            defender: defenderCanon,
+            lowPct: 0, highPct: 0, critPct: 0,
+            isStatChange: true, // Reuse this flag for non-damaging moves
+            statChanges: [], // Empty for screen moves
+            target: attackerCanon,
+            intimidateEffects: undefined,
+          },
+          weather: currentWeather,
+          myScreens,
+          enemyScreens,
+          runApplied: false,
+          startSnapshot: x.startSnapshot ?? {
+            my: myTeam.map(cloneMember),
+            enemy: enemyTeam.map(cloneMember),
+          },
+          endSnapshot: undefined,
+          appliedChanges: [],
+          chosen: undefined,
+        }) : x));
+        return;
+      }
+      
+      // Determine which team is attacking to pass correct screen info
+      const attackerIsMyTeam = myTeam.some(m => 
+        m?.name && resolveCanonicalName(m.name, dicts) === attackerCanon
+      );
+      
+      // Screens that affect the attacker (set by opposing team)
+      const screensAffectingAttacker = attackerIsMyTeam ? enemyScreens : myScreens;
+      
       const resp = await fetch('/api/calc', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -553,6 +645,8 @@ export default function App() {
           defender: defenderCanon,
           gen,
           weather: currentWeather?.type,
+          screens: screensAffectingAttacker, // Only send screens that affect the attacker
+          battleMode, // 'singles' or 'doubles'
           overrides: {
             attacker: {
               statStages: attackerStatStages,
@@ -642,6 +736,8 @@ export default function App() {
             intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
           },
           weather: currentWeather,
+          myScreens,
+          enemyScreens,
           runApplied: false,
           startSnapshot: x.startSnapshot ?? {
             my: myTeam.map(cloneMember),
@@ -687,6 +783,8 @@ export default function App() {
             intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
           },
           weather: currentWeather,
+          myScreens,
+          enemyScreens,
           runApplied: false,
           startSnapshot: x.startSnapshot ?? {
             my: myTeam.map(cloneMember),
@@ -765,6 +863,8 @@ export default function App() {
           intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
         },
         weather: currentWeather,
+        myScreens,
+        enemyScreens,
         useCrit: false,
         selectedRollIndex: 0,
         runApplied: false,
@@ -1213,6 +1313,17 @@ export default function App() {
         line += `[${weatherName}] `;
       }
 
+      // Add screen information if present
+      const allScreens = [...(t.myScreens || []), ...(t.enemyScreens || [])];
+      if (allScreens.length > 0) {
+        const screenNames = allScreens.map(s => {
+          const name = getScreenName(s.type);
+          const team = s.userTeam === 'my' ? 'Your' : 'Enemy';
+          return `${name} (${team})`;
+        }).join(', ');
+        line += `[${screenNames}] `;
+      }
+
       // Add Intimidate text if applicable
       if (c.intimidateUsed && c.intimidateUsed.length > 0) {
         const intimidateText = c.intimidateUsed
@@ -1370,6 +1481,19 @@ export default function App() {
     }
   }
 
+  function formatScreenSetupMessage(turnLine: TurnLine): string {
+    // Extract the move name from the turn text
+    const parsed = parseActionFromLine(turnLine.text);
+    if (!parsed) return 'Screen set up!';
+    
+    const moveName = parsed.move;
+    const screenType = getScreenFromMove(moveName);
+    if (!screenType) return 'Screen set up!';
+    
+    const screenName = getScreenName(screenType);
+    return `${screenName} was set up!`;
+  }
+
   const myCollection = dicts.mySpecies;
 
   return (
@@ -1477,7 +1601,31 @@ export default function App() {
         {/* Planner */}
         <section className="rounded-2xl border border-neutral-800 p-4 bg-neutral-900/40">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold">Planner</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold">Planner</h2>
+              <div className="flex items-center gap-1 bg-neutral-800 rounded-lg p-0.5">
+                <button
+                  onClick={() => setBattleMode('singles')}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    battleMode === 'singles'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  Singles
+                </button>
+                <button
+                  onClick={() => setBattleMode('doubles')}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    battleMode === 'doubles'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  Doubles
+                </button>
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               <button onClick={addTurn} className="rounded-xl px-3 py-2 bg-emerald-600 hover:bg-emerald-500 transition text-sm font-semibold shadow">
                 + Add Turn
@@ -1513,6 +1661,25 @@ export default function App() {
                         {getWeatherSymbol(t.weather.type)}
                       </span>
                     )}
+                    {/* Screen symbols */}
+                    {t.myScreens?.map((screen, sIdx) => (
+                      <span 
+                        key={`my-${sIdx}`} 
+                        className="text-sm" 
+                        title={getScreenDescription(screen)}
+                      >
+                        {getScreenSymbol(screen.type)}
+                      </span>
+                    ))}
+                    {t.enemyScreens?.map((screen, sIdx) => (
+                      <span 
+                        key={`enemy-${sIdx}`} 
+                        className="text-sm opacity-70" 
+                        title={getScreenDescription(screen)}
+                      >
+                        {getScreenSymbol(screen.type)}
+                      </span>
+                    ))}
                     <div className="text-sm font-semibold text-neutral-300">Turn {idx+1}:</div>
                   </div>
 
@@ -1569,10 +1736,12 @@ export default function App() {
                         )}
 
                         {t.result.isStatChange ? (
-                          // Stat change display
+                          // Stat change or screen setup display
                           <div className="grid grid-cols-[1fr_auto_auto] gap-2">
                             <div className="h-[44px] flex items-center text-sm px-4 rounded-xl bg-neutral-800/50 border border-neutral-700">
-                              {formatStatChangeMessage(t.result.target ?? '', t.result.statChanges ?? [])}
+                              {(t.result.statChanges ?? []).length === 0 
+                                ? formatScreenSetupMessage(t)
+                                : formatStatChangeMessage(t.result.target ?? '', t.result.statChanges ?? [])}
                             </div>
 
                             <RunButton

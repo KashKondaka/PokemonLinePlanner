@@ -176,7 +176,7 @@ export default function TeamBox({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {Array.from({ length: Math.max(6, members.length || 0) }).map((_, idx) => {
           const m = members[idx];
-          const pct = Math.max(0, Math.min(100, Math.round(m?.pct ?? 0)));
+          const pct = Math.max(0, Math.min(100, Math.round(m?.pct ?? 100))); // Default to 100 for full HP
           const maxHP = m?.maxHP;
           const curHP = (typeof m?.curHP === 'number')
             ? m!.curHP!

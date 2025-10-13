@@ -194,6 +194,8 @@ app.post('/api/calc', (req, res) => {
       move,
       defender,
       weather, // 'sun' | 'rain' | 'hail' | 'sandstorm' | null
+      screens, // Array of ScreenState objects that affect the attacker
+      battleMode = 'singles', // 'singles' or 'doubles'
       overrides, // { attacker?: { item?, status?, statStages? }, defender?: { item?, status?, statStages? } }
     } = req.body || {};
 
@@ -267,14 +269,52 @@ app.post('/api/calc', (req, res) => {
     const sum = damageSummary(Number(gen), A, D, String(move), fieldOptions, attackerBoosts, defenderBoosts);
     const defMax = sum.defenderMaxHP;
 
-    // Damage (min/max/crit) from calc
-    const dmgLowPct  = sum.minPct;
-    const dmgHighPct = sum.maxPct;
-    const dmgCritPct = sum.critMaxPct;
+    // Determine if the move is physical or special and if it's a spread move
+    const moveObj = new Move(Generations.get(Number(gen) as any), String(move));
+    const isPhysical = moveObj.category === 'Physical';
+    // Spread moves in doubles hit multiple targets (Earthquake, Surf, Rock Slide, etc.)
+    // These typically have target "all" or "allySide" or "foeSide"
+    const isSpreadMove = moveObj.target === 'all' || 
+                         moveObj.target === 'allySide' || 
+                         moveObj.target === 'foeSide';
+    
+    // Apply spread move modifier in doubles
+    let spreadModifier = 1.0;
+    if (battleMode === 'doubles' && isSpreadMove) {
+      spreadModifier = 0.75; // Spread moves deal 75% damage in doubles
+    }
+    
+    // Apply screen modifiers
+    let screenModifier = 1.0;
+    if (screens && Array.isArray(screens) && screens.length > 0) {
+      // Screen modifier differs between singles and doubles
+      const singleScreenMod = 0.5; // 50% damage in singles
+      const doublesScreenMod = 2 / 3; // ~66.7% damage in doubles
+      const screenReduction = battleMode === 'doubles' ? doublesScreenMod : singleScreenMod;
+      
+      // Check each screen to see if it affects this attack
+      for (const screen of screens) {
+        if (screen.type === 'light-screen' && !isPhysical) {
+          screenModifier *= screenReduction;
+        } else if (screen.type === 'reflect' && isPhysical) {
+          screenModifier *= screenReduction;
+        } else if (screen.type === 'aurora-veil') {
+          screenModifier *= screenReduction;
+        }
+      }
+    }
 
-    const dmgLowHP   = sum.rollsHP[0];
-    const dmgHighHP  = sum.rollsHP[sum.rollsHP.length - 1];
-    const dmgCritHP  = sum.critRollsHP[sum.critRollsHP.length - 1];
+    // Combine all modifiers
+    const totalModifier = screenModifier * spreadModifier;
+
+    // Damage (min/max/crit) from calc, with all modifiers applied
+    let dmgLowPct  = sum.minPct * totalModifier;
+    let dmgHighPct = sum.maxPct * totalModifier;
+    let dmgCritPct = sum.critMaxPct * totalModifier;
+
+    let dmgLowHP   = Math.floor(sum.rollsHP[0] * totalModifier);
+    let dmgHighHP  = Math.floor(sum.rollsHP[sum.rollsHP.length - 1] * totalModifier);
+    let dmgCritHP  = Math.floor(sum.critRollsHP[sum.critRollsHP.length - 1] * totalModifier);
 
     // === Remaining (what UI wants to display) ===
     // "Low roll" should be LESS damage → MORE remaining.
@@ -305,9 +345,9 @@ app.post('/api/calc', (req, res) => {
     const result = calculate(g, pA, pD, mv, fld);
     const resultCrit = calculate(g, pA, pD, new Move(g, String(move), { isCrit: true }), fld);
 
-    // Use rolls from the summary which already has boosts applied
-    const rawRolls = sum.rollsHP;
-    const rawRollsCrit = sum.critRollsHP;
+    // Use rolls from the summary which already has boosts applied, and apply all modifiers
+    const rawRolls = sum.rollsHP.map(r => Math.floor(r * totalModifier));
+    const rawRollsCrit = sum.critRollsHP.map(r => Math.floor(r * totalModifier));
 
     const debug = {
       attacker: {
