@@ -5,10 +5,10 @@ export type StatusType = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
 
 export type TeamMember = {
   name: string;
-  pct: number;                 // current HP in %
-  maxHP?: number;              // known after first calc
-  curHP?: number;              // absolute current HP if known
-  item?: string;               // canonical item text (e.g., "Black Glasses", "Fire Gem", "Oran Berry")
+  pct: number;
+  maxHP?: number;
+  curHP?: number;
+  item?: string;
   berry?: { name: string; consumed: boolean } | undefined;
   status?: { type: StatusType; toxicStage?: number } | undefined;
 };
@@ -18,8 +18,6 @@ type Props = {
   subtitle?: string;
   members: (TeamMember | undefined)[];
   editable?: boolean;
-
-  // For "My Team" box only
   onDropToSlot?: (index: number, species: string) => void;
   onRemove?: (index: number) => void;
   onChangeStatus?: (index: number, status: StatusType | undefined) => void;
@@ -40,12 +38,17 @@ const ITEM_OPTIONS: { label: string; value?: string }[] = [
   // Healing/status berries
   { label: 'oran', value: 'Oran Berry' },
   { label: 'sitrus', value: 'Sitrus Berry' },
+  { label: 'iapapa', value: 'Iapapa Berry' },
+  { label: 'figy', value: 'Figy Berry' },
+  { label: 'wiki', value: 'Wiki Berry' },
+  { label: 'mago', value: 'Mago Berry' },
+  { label: 'aguav', value: 'Aguav Berry' },
   { label: 'pecha', value: 'Pecha Berry' },
   { label: 'rawst', value: 'Rawst Berry' },
   { label: 'aspear', value: 'Aspear Berry' },
   { label: 'chesto', value: 'Chesto Berry' },
   { label: 'cheri', value: 'Cheri Berry' },
-  // Boosters (short codes from your list → canonical)
+  // Boosters (short codes → canonical)
   { label: 'blk glss', value: 'Black Glasses' },
   { label: 'nvr ice', value: 'Never-Melt Ice' },
   { label: 'mys wtr', value: 'Mystic Water' },
@@ -78,21 +81,20 @@ const ITEM_OPTIONS: { label: string; value?: string }[] = [
   { label: 'ice gm', value: 'Ice Gem' },
   { label: 'fght gm', value: 'Fighting Gem' },
   { label: 'wtr gm', value: 'Water Gem' },
-  { label: 'fry gm', value: 'Fairy Gem' }, // assuming "fry gm" = Fairy Gem
+  { label: 'fry gm', value: 'Fairy Gem' },
   { label: 'drg gm', value: 'Dragon Gem' },
 ];
 
 function statusPillStyle(s?: StatusType) {
   switch (s) {
-    case 'par': return 'bg-yellow-300 text-yellow-900';      // PRLYZ
-    case 'burn': return 'bg-orange-500 text-orange-50';       // BRN
-    case 'psn': return 'bg-purple-300 text-purple-900';       // PSN
-    case 'tox': return 'bg-purple-700 text-purple-100';       // BPSN
-    case 'frz': return 'bg-cyan-500 text-cyan-900';           // FRZN
+    case 'par': return 'bg-yellow-300 text-yellow-900';
+    case 'burn': return 'bg-orange-500 text-orange-50';
+    case 'psn': return 'bg-purple-300 text-purple-900';
+    case 'tox': return 'bg-purple-700 text-purple-100';
+    case 'frz': return 'bg-cyan-500 text-cyan-900';
     default: return 'bg-neutral-700 text-neutral-200';
   }
 }
-
 function statusLabel(s?: StatusType) {
   if (!s) return '';
   if (s === 'burn') return 'BRN';
@@ -140,7 +142,6 @@ export default function TeamBox({
             ? m!.curHP!
             : (typeof maxHP === 'number' ? Math.max(0, Math.round((pct / 100) * maxHP)) : undefined);
 
-          // HP bar color: green > 50, yellow 25-50, red < 25
           const barColor =
             pct > 50 ? 'from-emerald-600 to-emerald-700'
             : pct > 25 ? 'from-yellow-500 to-yellow-600'
@@ -159,14 +160,6 @@ export default function TeamBox({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {/* Status pill (indicator only) */}
-                  {m?.status?.type && (
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${statusPillStyle(m.status.type)}`}>
-                      {statusLabel(m.status.type)}
-                    </span>
-                  )}
-
-                  {/* Tiny remove for editable */}
                   {editable && m?.name && (
                     <button
                       onClick={() => onRemove?.(idx)}
@@ -176,26 +169,29 @@ export default function TeamBox({
                       –
                     </button>
                   )}
+                  {m?.status?.type && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded ${statusPillStyle(m.status.type)}`}>
+                      {statusLabel(m.status.type)}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {/* HP Bar with overlayed absolute text */}
               <div className="mt-2">
                 <div className="relative h-3 w-full rounded bg-neutral-800 overflow-hidden">
                   <div
                     className={`absolute left-0 top-0 h-full bg-gradient-to-r ${barColor} transition-all`}
                     style={{ width: `${pct}%` }}
                   />
-                    <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-black">
+                  <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-black">
                     {typeof curHP === 'number' && typeof maxHP === 'number'
-                        ? `${curHP}/${maxHP}`
-                        : '—/—'}
-                    </div>
+                      ? `${curHP}/${maxHP}`
+                      : (typeof maxHP === 'number' ? `${Math.round((pct/100)*maxHP)}/${maxHP}` : '—/—')}
+                  </div>
                 </div>
                 <div className="text-[11px] text-neutral-400 mt-1">{pct}%</div>
               </div>
 
-              {/* Item + Status dropdowns (My Team only / editable) */}
               {editable && (
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <select
@@ -222,7 +218,6 @@ export default function TeamBox({
                 </div>
               )}
 
-              {/* Item note (small, optional) */}
               {m?.item && (
                 <div className="mt-2 text-[10px] text-neutral-400">
                   Item: <span className="text-neutral-300">{m.item}</span>

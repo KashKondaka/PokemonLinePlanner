@@ -1,28 +1,42 @@
 // src/logic/hpMath.ts
 export type BerryRule =
   | { kind: 'heal-flat'; name: 'oran'; thresholdPct: number; healHP: number }
-  | { kind: 'heal-pct';  name: 'sitrus'; thresholdPct: number; healPct: number };
+  | { kind: 'heal-pct';  name: 'sitrus'; thresholdPct: number; healPct: number }
+  | { kind: 'heal-pct';  name: 'iapapa'|'figy'|'wiki'|'mago'|'aguav'; thresholdPct: number; healPct: number };
 
 export function normalizeBerryName(s?: string) {
   if (!s) return undefined;
-  const k = s.toLowerCase().replace(/\s+/g, '');
+  // normalize and drop trailing "berry"
+  const k = s.toLowerCase().replace(/\s+/g, '').replace(/berry$/, '');
   if (k.startsWith('oran')) return 'oran';
   if (k.startsWith('sitrus')) return 'sitrus';
+  if (k.startsWith('iapapa')) return 'iapapa';
+  if (k.startsWith('figy')) return 'figy';
+  if (k.startsWith('wiki') || k.startsWith('wikib')) return 'wiki';
+  if (k.startsWith('mago')) return 'mago';
+  if (k.startsWith('aguav')) return 'aguav';
   return undefined;
 }
 
 /** Gen-aware rules for healing berries we support in planner */
 export function inferBerryRule(name: string | undefined, gen: number): BerryRule | undefined {
   if (!name) return undefined;
+
   if (name === 'oran') {
-    // Oran = +10 HP, threshold ≤50% in modern gens (older gens also 10 HP; threshold behavior doesn’t matter for planner preview)
     return { kind: 'heal-flat', name: 'oran', thresholdPct: 50, healHP: 10 };
   }
   if (name === 'sitrus') {
-    // Sitrus is 25% (Gen 4+) at ≤50%
-    const healPct = 25;
-    return { kind: 'heal-pct', name: 'sitrus', thresholdPct: 50, healPct };
+    // Gen 4+: 25% heal at ≤50%
+    return { kind: 'heal-pct', name: 'sitrus', thresholdPct: 50, healPct: 25 };
   }
+
+  // Pinch berries: Iapapa, Figy, Wiki, Mago, Aguav
+  if (name === 'iapapa' || name === 'figy' || name === 'wiki' || name === 'mago' || name === 'aguav') {
+    // Modern gens (7+): 50% at ≤25%. Older gens (4–6): 25% at ≤25%.
+    const healPct = gen >= 7 ? 50 : 25;
+    return { kind: 'heal-pct', name, thresholdPct: 25, healPct };
+  }
+
   return undefined;
 }
 
@@ -58,7 +72,6 @@ export function adjustFromCurrentRWithBerry(
     if (!rule) {
       return { pct: formatPct(rawPct), hp: undefined, consumed: false, healHP: 0, healPct: 0 };
     }
-    // Trigger ONLY if post-hit (raw) remaining crosses threshold (≤)
     if (rawPct <= rule.thresholdPct) {
       const healed = applyHeal(rawPct, rule, maxHP);
       return {
