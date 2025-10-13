@@ -11,7 +11,7 @@ import {
   
   // Map our keys (atk/def/spa/spd/spe) → calc keys (at/df/sa/sd/sp) and ensure all 6 exist
 // src/damage.ts
-function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet) {
+function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, boosts?: any) {
     const norm = (s?: string) => (s && s.trim().length ? s : undefined);
 
     const sIV = (set.ivs ?? {}) as any;
@@ -56,6 +56,7 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet) 
         status: set.status as any,
         ivs,
         evs,
+        boosts: boosts ?? {},
     });
 }   
   
@@ -64,12 +65,18 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet) 
     atk: SimpleSet,
     def: SimpleSet,
     moveName: string,
-    fieldInput?: Partial<ConstructorParameters<typeof Field>[0]>
+    fieldInput?: Partial<ConstructorParameters<typeof Field>[0]>,
+    attackerBoosts?: any,
+    defenderBoosts?: any
   ): DamageSummary {
     const gen = Generations.get(genNum as GenerationNum);
   
-    const A = toCalcPokemon(gen, atk);
-    const D = toCalcPokemon(gen, def);
+    const A = toCalcPokemon(gen, atk, attackerBoosts);
+    const D = toCalcPokemon(gen, def, defenderBoosts);
+    
+    console.log('[damageSummary] Pokemon A boosts:', (A as any).boosts);
+    console.log('[damageSummary] Pokemon D boosts:', (D as any).boosts);
+    
     const move = new Move(gen, moveName);
     const field = new Field(fieldInput ?? {});
   

@@ -6,6 +6,8 @@ export type Dictionaries = {
     movesByAlias: Record<string, string[]>;
     myItemBySpecies: Record<string, string | undefined>;
     enemyItemBySpecies: Record<string, string | undefined>;
+    myAbilityBySpecies: Record<string, string | undefined>;
+    enemyAbilityBySpecies: Record<string, string | undefined>;
   };
   
   export function uniqueSorted<T>(arr: T[]) {
@@ -32,6 +34,7 @@ export type Dictionaries = {
     const species: string[] = [];
     const movesBySpecies: Record<string, string[]> = {};
     const itemBySpecies: Record<string, string | undefined> = {};
+    const abilityBySpecies: Record<string, string | undefined> = {};
   
     const blocks = text.replace(/\r\n/g, '\n').split(/\n{2,}/);
   
@@ -56,7 +59,12 @@ export type Dictionaries = {
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
   
-        if (/^(Ability:|Level:|IVs:|EVs:)/i.test(line)) continue;
+        if (/^Ability:/i.test(line)) {
+          const ability = clean(line.split(':')[1]);
+          if (ability) abilityBySpecies[speciesName] = ability;
+          continue;
+        }
+        if (/^(Level:|IVs:|EVs:)/i.test(line)) continue;
         if (/^[A-Za-z]+ Nature$/i.test(line)) continue;
   
         if (line.startsWith('- ')) {
@@ -70,22 +78,31 @@ export type Dictionaries = {
       movesBySpecies[k] = uniqueSorted(movesBySpecies[k]);
     }
   
-    return { species: uniqueSorted(species), movesBySpecies, itemBySpecies };
+    return { species: uniqueSorted(species), movesBySpecies, itemBySpecies, abilityBySpecies };
   }
   
   /** ===== ENEMYTRAINER (line-based) ===== */
-  function parseEnemyTrainer(text: string) {
+function parseEnemyTrainer(text: string) {
     const species: string[] = [];
     const movesBySpecies: Record<string, string[]> = {};
     const itemBySpecies: Record<string, string | undefined> = {};
+    const abilityBySpecies: Record<string, string | undefined> = {};
   
     for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
       let line = clean(raw);
       if (!line) continue;
   
-      // Trim trailing [ ... ] (Nature|Ability)
+      // Extract ability from trailing [ ... ] (Nature|Ability)
       const bracketIdx = line.indexOf('[');
-      if (bracketIdx !== -1) line = clean(line.slice(0, bracketIdx));
+      let ability: string | undefined;
+      if (bracketIdx !== -1) {
+        const bracket = line.slice(bracketIdx + 1, line.lastIndexOf(']') || line.length);
+        const parts = bracket.split('|').map(clean);
+        if (parts.length >= 2) {
+          ability = parts[1]; // Second part is ability
+        }
+        line = clean(line.slice(0, bracketIdx));
+      }
   
       const lower = line.toLowerCase();
       const cutpoints = [lower.indexOf(' lv.'), line.indexOf('@'), line.indexOf(':')].filter(i => i !== -1);
@@ -94,6 +111,8 @@ export type Dictionaries = {
       let speciesName = clean(firstCut === -1 ? line : line.slice(0, firstCut)).replace(/,\s*$/, '');
       if (!speciesName) continue;
       species.push(speciesName);
+      
+      if (ability) abilityBySpecies[speciesName] = ability;
   
       // item
       const atIdx = line.indexOf('@');
@@ -115,7 +134,7 @@ export type Dictionaries = {
       }
     }
   
-    return { species: uniqueSorted(species), movesBySpecies, itemBySpecies };
+    return { species: uniqueSorted(species), movesBySpecies, itemBySpecies, abilityBySpecies };
   }
   
   export function buildDictionaries(myText: string, enemyText: string): Dictionaries {
@@ -138,6 +157,8 @@ export type Dictionaries = {
       movesByAlias,
       myItemBySpecies: my.itemBySpecies,
       enemyItemBySpecies: en.itemBySpecies,
+      myAbilityBySpecies: my.abilityBySpecies,
+      enemyAbilityBySpecies: en.abilityBySpecies,
     };
   }
   

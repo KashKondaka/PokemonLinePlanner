@@ -3,6 +3,14 @@ import React from 'react';
 
 export type StatusType = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
 
+export type StatStages = {
+  atk: number;
+  def: number;
+  spatk: number;
+  spdef: number;
+  spd: number;
+};
+
 export type TeamMember = {
   name: string;
   pct: number;
@@ -11,6 +19,7 @@ export type TeamMember = {
   item?: string;
   berry?: { name: string; consumed: boolean } | undefined;
   status?: { type: StatusType; toxicStage?: number } | undefined;
+  statStages?: StatStages;
 };
 
 type Props = {
@@ -22,6 +31,7 @@ type Props = {
   onRemove?: (index: number) => void;
   onChangeStatus?: (index: number, status: StatusType | undefined) => void;
   onChangeItem?: (index: number, item: string | undefined) => void;
+  onChangeHP?: (index: number, curHP: number, maxHP: number) => void;
 };
 
 const STATUS_OPTIONS: { label: string; value?: StatusType }[] = [
@@ -87,12 +97,12 @@ const ITEM_OPTIONS: { label: string; value?: string }[] = [
 
 function statusPillStyle(s?: StatusType) {
   switch (s) {
-    case 'par': return 'bg-yellow-300 text-yellow-900';
-    case 'burn': return 'bg-orange-500 text-orange-50';
-    case 'psn': return 'bg-purple-300 text-purple-900';
-    case 'tox': return 'bg-purple-700 text-purple-100';
-    case 'frz': return 'bg-cyan-500 text-cyan-900';
-    default: return 'bg-neutral-700 text-neutral-200';
+    case 'par': return 'bg-yellow-400 text-yellow-950 border border-yellow-600';
+    case 'burn': return 'bg-orange-500 text-orange-50 border border-orange-700';
+    case 'psn': return 'bg-purple-400 text-purple-950 border border-purple-600';
+    case 'tox': return 'bg-purple-700 text-purple-100 border border-purple-900';
+    case 'frz': return 'bg-cyan-400 text-cyan-950 border border-cyan-600';
+    default: return 'bg-neutral-700 text-neutral-200 border border-neutral-600';
   }
 }
 function statusLabel(s?: StatusType) {
@@ -105,6 +115,18 @@ function statusLabel(s?: StatusType) {
   return '';
 }
 
+function formatStatStage(stage: number): string {
+  if (stage === 0) return '—';
+  if (stage > 0) return `+${stage}`;
+  return `${stage}`;
+}
+
+function getStatStageColor(stage: number): string {
+  if (stage === 0) return 'text-neutral-500';
+  if (stage > 0) return 'text-emerald-400';
+  return 'text-red-400';
+}
+
 export default function TeamBox({
   title,
   subtitle,
@@ -114,7 +136,11 @@ export default function TeamBox({
   onRemove,
   onChangeStatus,
   onChangeItem,
+  onChangeHP,
 }: Props) {
+  const [editingHP, setEditingHP] = React.useState<number | null>(null);
+  const [tempCurHP, setTempCurHP] = React.useState<string>('');
+  const [tempMaxHP, setTempMaxHP] = React.useState<string>('');
 
   const handleDragOver = (e: React.DragEvent) => {
     if (!editable) return;
@@ -124,6 +150,20 @@ export default function TeamBox({
     if (!editable || !onDropToSlot) return;
     const species = e.dataTransfer.getData('text/plain');
     if (species) onDropToSlot(index, species);
+  };
+
+  const startEditingHP = (idx: number, curHP: number | undefined, maxHP: number | undefined) => {
+    if (!editable) return;
+    setEditingHP(idx);
+    setTempCurHP(String(curHP ?? maxHP ?? 0));
+    setTempMaxHP(String(maxHP ?? 0));
+  };
+
+  const finishEditingHP = (idx: number) => {
+    const newMaxHP = Math.max(1, parseInt(tempMaxHP) || 0);
+    const newCurHP = Math.max(0, Math.min(newMaxHP, parseInt(tempCurHP) || 0));
+    onChangeHP?.(idx, newCurHP, newMaxHP);
+    setEditingHP(null);
   };
 
   return (
@@ -155,8 +195,16 @@ export default function TeamBox({
               className="rounded-xl border border-neutral-800 bg-neutral-900/60 p-3"
             >
               <div className="flex items-center justify-between">
-                <div className="font-medium">
-                  {m?.name ?? <span className="text-neutral-500 italic">Empty slot</span>}
+                <div className="flex items-center gap-2">
+                  <div className="font-medium">
+                    {m?.name ?? <span className="text-neutral-500 italic">Empty slot</span>}
+                  </div>
+                  {/* Status indicator - show for all teams */}
+                  {m?.status?.type && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${statusPillStyle(m.status.type)}`}>
+                      {statusLabel(m.status.type)}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -169,25 +217,63 @@ export default function TeamBox({
                       –
                     </button>
                   )}
-                  {m?.status?.type && (
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${statusPillStyle(m.status.type)}`}>
-                      {statusLabel(m.status.type)}
-                    </span>
-                  )}
                 </div>
               </div>
 
+              {/* Stat Stages Display */}
+              {m?.name && (
+                <div className="mt-1 text-[10px] text-neutral-400 flex gap-2">
+                  <span>Atk: <span className={getStatStageColor(m.statStages?.atk ?? 0)}>{formatStatStage(m.statStages?.atk ?? 0)}</span></span>
+                  <span>Def: <span className={getStatStageColor(m.statStages?.def ?? 0)}>{formatStatStage(m.statStages?.def ?? 0)}</span></span>
+                  <span>SpAtk: <span className={getStatStageColor(m.statStages?.spatk ?? 0)}>{formatStatStage(m.statStages?.spatk ?? 0)}</span></span>
+                  <span>SpDef: <span className={getStatStageColor(m.statStages?.spdef ?? 0)}>{formatStatStage(m.statStages?.spdef ?? 0)}</span></span>
+                  <span>Spd: <span className={getStatStageColor(m.statStages?.spd ?? 0)}>{formatStatStage(m.statStages?.spd ?? 0)}</span></span>
+                </div>
+              )}
+
               <div className="mt-2">
-                <div className="relative h-3 w-full rounded bg-neutral-800 overflow-hidden">
+                <div 
+                  className={`relative h-3 w-full rounded bg-neutral-800 overflow-hidden ${editable && m?.name ? 'cursor-pointer hover:ring-1 hover:ring-neutral-600' : ''}`}
+                  onClick={() => editable && m?.name && startEditingHP(idx, curHP, maxHP)}
+                >
                   <div
                     className={`absolute left-0 top-0 h-full bg-gradient-to-r ${barColor} transition-all`}
                     style={{ width: `${pct}%` }}
                   />
-                  <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-black">
-                    {typeof curHP === 'number' && typeof maxHP === 'number'
-                      ? `${curHP}/${maxHP}`
-                      : (typeof maxHP === 'number' ? `${Math.round((pct/100)*maxHP)}/${maxHP}` : '—/—')}
-                  </div>
+                  {editingHP === idx ? (
+                    <div className="absolute inset-0 flex items-center justify-center gap-0.5 text-[10px] font-semibold bg-neutral-900/95">
+                      <input
+                        type="number"
+                        value={tempCurHP}
+                        onChange={(e) => setTempCurHP(e.target.value)}
+                        onBlur={() => finishEditingHP(idx)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') finishEditingHP(idx);
+                          if (e.key === 'Escape') setEditingHP(null);
+                        }}
+                        autoFocus
+                        className="w-12 bg-transparent text-center text-white outline-none"
+                      />
+                      <span className="text-white">/</span>
+                      <input
+                        type="number"
+                        value={tempMaxHP}
+                        onChange={(e) => setTempMaxHP(e.target.value)}
+                        onBlur={() => finishEditingHP(idx)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') finishEditingHP(idx);
+                          if (e.key === 'Escape') setEditingHP(null);
+                        }}
+                        className="w-12 bg-transparent text-center text-white outline-none"
+                      />
+                    </div>
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-black">
+                      {typeof curHP === 'number' && typeof maxHP === 'number'
+                        ? `${curHP}/${maxHP}`
+                        : (typeof maxHP === 'number' ? `${maxHP}/${maxHP}` : '—/—')}
+                    </div>
+                  )}
                 </div>
                 <div className="text-[11px] text-neutral-400 mt-1">{pct}%</div>
               </div>
@@ -218,13 +304,24 @@ export default function TeamBox({
                 </div>
               )}
 
-              {m?.item && (
-                <div className="mt-2 text-[10px] text-neutral-400">
-                  Item: <span className="text-neutral-300">{m.item}</span>
-                  {m.berry?.name && (
-                    <span className="ml-2">
-                      • Berry: <span className="text-neutral-300">{m.berry.name}</span>
-                      {m.berry.consumed ? ' (consumed)' : ''}
+              {(m?.item || m?.status?.type) && (
+                <div className="mt-2 text-[10px] text-neutral-400 flex flex-wrap items-center gap-2">
+                  {m?.item && (
+                    <>
+                      <span>Item: <span className="text-neutral-300">{m.item}</span></span>
+                      {m.berry?.name && (
+                        <span>
+                          • Berry: <span className="text-neutral-300">{m.berry.name}</span>
+                          {m.berry.consumed ? ' (consumed)' : ''}
+                        </span>
+                      )}
+                    </>
+                  )}
+                  {m?.status?.type && (
+                    <span>
+                      • Status: <span className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ${statusPillStyle(m.status.type)}`}>
+                        {statusLabel(m.status.type)}
+                      </span>
                     </span>
                   )}
                 </div>

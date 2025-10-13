@@ -6,6 +6,94 @@ import { parseShowdownTeamsFile, parseEnemyCompactLines } from './parser';
 import { SimpleSet } from './types';
 import { Generations, Pokemon, Move, Field, GenerationNum, calculate } from '@smogon/calc';
 
+// Stat-changing moves database
+type StatChange = {
+  stat: 'atk' | 'def' | 'spatk' | 'spdef' | 'spd';
+  stages: number;
+  target: 'self' | 'opponent';
+};
+
+type StatChangingMove = {
+  name: string;
+  changes: StatChange[];
+};
+
+const STAT_CHANGING_MOVES: StatChangingMove[] = [
+  { name: 'growl', changes: [{ stat: 'atk', stages: -1, target: 'opponent' }] },
+  { name: 'charm', changes: [{ stat: 'atk', stages: -2, target: 'opponent' }] },
+  { name: 'baby-doll eyes', changes: [{ stat: 'atk', stages: -1, target: 'opponent' }] },
+  { name: 'leer', changes: [{ stat: 'def', stages: -1, target: 'opponent' }] },
+  { name: 'tail whip', changes: [{ stat: 'def', stages: -1, target: 'opponent' }] },
+  { name: 'screech', changes: [{ stat: 'def', stages: -2, target: 'opponent' }] },
+  { name: 'confide', changes: [{ stat: 'spatk', stages: -1, target: 'opponent' }] },
+  { name: 'eerie impulse', changes: [{ stat: 'spatk', stages: -2, target: 'opponent' }] },
+  { name: 'fake tears', changes: [{ stat: 'spdef', stages: -2, target: 'opponent' }] },
+  { name: 'metal sound', changes: [{ stat: 'spdef', stages: -2, target: 'opponent' }] },
+  { name: 'string shot', changes: [{ stat: 'spd', stages: -1, target: 'opponent' }] },
+  { name: 'scary face', changes: [{ stat: 'spd', stages: -2, target: 'opponent' }] },
+  { name: 'cotton spore', changes: [{ stat: 'spd', stages: -2, target: 'opponent' }] },
+  { name: 'swords dance', changes: [{ stat: 'atk', stages: 2, target: 'self' }] },
+  { name: 'howl', changes: [{ stat: 'atk', stages: 1, target: 'self' }] },
+  { name: 'sharpen', changes: [{ stat: 'atk', stages: 1, target: 'self' }] },
+  { name: 'harden', changes: [{ stat: 'def', stages: 1, target: 'self' }] },
+  { name: 'withdraw', changes: [{ stat: 'def', stages: 1, target: 'self' }] },
+  { name: 'defense curl', changes: [{ stat: 'def', stages: 1, target: 'self' }] },
+  { name: 'iron defense', changes: [{ stat: 'def', stages: 2, target: 'self' }] },
+  { name: 'nasty plot', changes: [{ stat: 'spatk', stages: 2, target: 'self' }] },
+  { name: 'calm mind', changes: [{ stat: 'spatk', stages: 1, target: 'self' }, { stat: 'spdef', stages: 1, target: 'self' }] },
+  { name: 'amnesia', changes: [{ stat: 'spdef', stages: 2, target: 'self' }] },
+  { name: 'agility', changes: [{ stat: 'spd', stages: 2, target: 'self' }] },
+  { name: 'rock polish', changes: [{ stat: 'spd', stages: 2, target: 'self' }] },
+  { name: 'bulk up', changes: [{ stat: 'atk', stages: 1, target: 'self' }, { stat: 'def', stages: 1, target: 'self' }] },
+  { name: 'dragon dance', changes: [{ stat: 'atk', stages: 1, target: 'self' }, { stat: 'spd', stages: 1, target: 'self' }] },
+  { name: 'coil', changes: [{ stat: 'atk', stages: 1, target: 'self' }, { stat: 'def', stages: 1, target: 'self' }] },
+];
+
+function getStatChangingMove(moveName: string): StatChangingMove | null {
+  const normalized = moveName.toLowerCase().trim();
+  return STAT_CHANGING_MOVES.find(m => m.name === normalized) ?? null;
+}
+
+// Status-inflicting moves database
+type StatusEffect = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
+
+type StatusMove = {
+  name: string;
+  status: StatusEffect;
+};
+
+const STATUS_MOVES: StatusMove[] = [
+  { name: 'thunder wave', status: 'par' },
+  { name: 'will o wisp', status: 'burn' },
+  { name: 'will-o-wisp', status: 'burn' },
+  { name: "will-o'-wisp", status: 'burn' },
+  { name: 'toxic', status: 'tox' },
+  { name: 'poison gas', status: 'psn' },
+  { name: 'poison powder', status: 'psn' },
+  { name: 'poisonpowder', status: 'psn' },
+  { name: 'stun spore', status: 'par' },
+  { name: 'stunspore', status: 'par' },
+  { name: 'glare', status: 'par' },
+];
+
+function getStatusMove(moveName: string): StatusMove | null {
+  const normalized = moveName.toLowerCase().trim();
+  return STATUS_MOVES.find(m => m.name === normalized) ?? null;
+}
+
+// Convert UI stat stages to @smogon/calc boosts format
+function convertStatStagesToBoosts(statStages?: any): any {
+  if (!statStages) return {};
+  // Use long format keys for boosts (atk, def, spa, spd, spe)
+  return {
+    atk: statStages.atk ?? 0,
+    def: statStages.def ?? 0,
+    spa: statStages.spatk ?? 0,
+    spd: statStages.spdef ?? 0,
+    spe: statStages.spd ?? 0,
+  };
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -31,6 +119,7 @@ const buildLookup = (sets: SimpleSet[]) => {
 function mapUiStatusToCalc(s?: string): SimpleSet['status'] | undefined {
   if (!s) return undefined;
   const k = s.trim().toLowerCase();
+  // Map our status types to @smogon/calc's expected format
   if (k === 'brn' || k === 'burn') return 'brn';
   if (k === 'prlyz' || k === 'par' || k === 'paralyze' || k === 'paralyzed') return 'par';
   if (k === 'psn' || k === 'poison') return 'psn';
@@ -40,8 +129,19 @@ function mapUiStatusToCalc(s?: string): SimpleSet['status'] | undefined {
   return undefined;
 }
 
+// Map weather string to @smogon/calc weather format
+function mapWeatherToCalc(weather?: string): 'Sun' | 'Rain' | 'Sand' | 'Hail' | 'Snow' | undefined {
+  if (!weather) return undefined;
+  const w = weather.trim().toLowerCase();
+  if (w === 'sun' || w === 'sunny') return 'Sun';
+  if (w === 'rain') return 'Rain';
+  if (w === 'sandstorm' || w === 'sand') return 'Sand';
+  if (w === 'hail') return 'Hail';
+  return undefined;
+}
+
 // Build a Pokemon exactly like the calc will see it (for debug echo)
-function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet) {
+function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, boosts?: any) {
   const norm = (s?: string) => (s && s.trim().length ? s : undefined);
   const sIV = (set.ivs ?? {}) as any;
   const sEV = (set.evs ?? {}) as any;
@@ -80,6 +180,7 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet) 
     status: set.status as any,
     ivs,
     evs,
+    boosts: boosts ?? {},
   });
 }
 
@@ -92,11 +193,39 @@ app.post('/api/calc', (req, res) => {
       attacker,
       move,
       defender,
-      overrides, // { attacker?: { item?, status? }, defender?: { item?, status? } }
+      weather, // 'sun' | 'rain' | 'hail' | 'sandstorm' | null
+      overrides, // { attacker?: { item?, status?, statStages? }, defender?: { item?, status?, statStages? } }
     } = req.body || {};
 
     if (!attacker || !move || !defender) {
       return res.status(400).json({ error: 'attacker, move, defender are required' });
+    }
+
+    // Check if this is a stat-changing move
+    const statMove = getStatChangingMove(String(move));
+    if (statMove) {
+      // For stat-changing moves, determine the target
+      const targetName = statMove.changes[0].target === 'opponent' ? defender : attacker;
+      
+      return res.json({
+        isStatChange: true,
+        attacker: String(attacker),
+        move: String(move),
+        target: targetName,
+        statChanges: statMove.changes,
+      });
+    }
+
+    // Check if this is a status-inflicting move
+    const statusMove = getStatusMove(String(move));
+    if (statusMove) {
+      return res.json({
+        isStatusMove: true,
+        attacker: String(attacker),
+        move: String(move),
+        target: String(defender),
+        status: statusMove.status,
+      });
     }
 
     // Parse text files each call (simple + stateless)
@@ -117,11 +246,25 @@ app.post('/api/calc', (req, res) => {
     if (overrides?.defender?.item) D.item = String(overrides.defender.item);
     const aStat = mapUiStatusToCalc(overrides?.attacker?.status);
     const dStat = mapUiStatusToCalc(overrides?.defender?.status);
-    if (aStat) A.status = aStat;
-    if (dStat) D.status = dStat;
+    if (aStat) {
+      A.status = aStat;
+      console.log(`[server] Applying status to attacker: ${aStat} (from ${overrides?.attacker?.status})`);
+    }
+    if (dStat) {
+      D.status = dStat;
+      console.log(`[server] Applying status to defender: ${dStat} (from ${overrides?.defender?.status})`);
+    }
+
+    // Apply stat stages from overrides
+    const attackerBoosts = convertStatStagesToBoosts(overrides?.attacker?.statStages);
+    const defenderBoosts = convertStatStagesToBoosts(overrides?.defender?.statStages);
+
+    // Map weather for field
+    const fieldWeather = mapWeatherToCalc(weather);
+    const fieldOptions = fieldWeather ? { weather: fieldWeather } : undefined;
 
     // Main summary
-    const sum = damageSummary(Number(gen), A, D, String(move));
+    const sum = damageSummary(Number(gen), A, D, String(move), fieldOptions, attackerBoosts, defenderBoosts);
     const defMax = sum.defenderMaxHP;
 
     // Damage (min/max/crit) from calc
@@ -154,16 +297,17 @@ app.post('/api/calc', (req, res) => {
 
     // EXTRA DEBUG: exact stats and raw 16 rolls
     const g = Generations.get(Number(gen) as GenerationNum);
-    const pA = toCalcPokemon(g, A);
-    const pD = toCalcPokemon(g, D);
+    const pA = toCalcPokemon(g, A, attackerBoosts);
+    const pD = toCalcPokemon(g, D, defenderBoosts);
     const mv = new Move(g, String(move));
     const fld = new Field({});
 
     const result = calculate(g, pA, pD, mv, fld);
     const resultCrit = calculate(g, pA, pD, new Move(g, String(move), { isCrit: true }), fld);
 
-    const rawRolls = (result.damage as number[]).slice();
-    const rawRollsCrit = (resultCrit.damage as number[]).slice();
+    // Use rolls from the summary which already has boosts applied
+    const rawRolls = sum.rollsHP;
+    const rawRollsCrit = sum.critRollsHP;
 
     const debug = {
       attacker: {
