@@ -1,13 +1,13 @@
 // src/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import QueryEditor from './components/QueryEditor';
 import TeamBox, { type TeamMember } from './components/TeamBox';
 import CalcButton from './components/CalcButton';
-// import DeleteButton from './components/DeleteButton'; // removed — now a small "-" to the left
 import CritToggleButton from './components/CritToggleButton';
 import RunButton from './components/RunButton';
 import UndoButton from './components/UndoButton';
 import RollSlider from './components/RollSlider';
+import FilePicker from './components/FilePicker';
 
 import { buildDictionaries, type Dictionaries } from './logic/parsers';
 import { parseActionFromLine } from './logic/grammar';
@@ -23,6 +23,7 @@ import {
   resolveCanonicalName,
   normalizeEnemyTrainerTextForBackend,
   uniqSortedWithZero,
+  fetchMaxHPFromAPI,
 } from './logic/helpers';
 
 /* ===================== Local types ===================== */
@@ -44,6 +45,11 @@ type AppliedChange = {
   prevBerry?: BerryState | undefined;
   prevStatus?: StatusState | undefined;
   prevItem?: string | undefined;
+};
+
+type TeamSnapshot = {
+  my: (MemberEx | undefined)[];
+  enemy: (MemberEx | undefined)[];
 };
 
 type TurnLine = {
@@ -89,6 +95,9 @@ type TurnLine = {
 
   // Run-once gate
   runApplied?: boolean;
+
+  // First-time Calc snapshot of both teams (metadata)
+  startSnapshot?: TeamSnapshot;
 };
 
 type CalcResponse = {
@@ -97,63 +106,6 @@ type CalcResponse = {
   remaining: { lowPct: number; lowHP: number; highPct: number; highHP: number; critPct: number; critHP: number };
   debug?: { rolls?: { normal?: number[]; crit?: number[] } };
 };
-
-/* ===================== Upload picker ===================== */
-
-function FilePicker({
-  label,
-  accept = '.txt',
-  onFileText,
-  onClear,
-  currentText,
-}: {
-  label: string;
-  accept?: string;
-  onFileText: (text: string, filename?: string) => void;
-  onClear: () => void;
-  currentText: string;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [fileName, setFileName] = useState<string>('');
-
-  const handlePick = () => inputRef.current?.click();
-  const handleChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const r = new FileReader();
-    r.onload = () => {
-      setFileName(f.name);
-      onFileText(String(r.result || ''), f.name);
-    };
-    r.readAsText(f);
-  };
-  const handleClear = () => {
-    setFileName('');
-    onClear();
-    if (inputRef.current) inputRef.current.value = '';
-  };
-
-  return (
-    <div className="flex items-center gap-3">
-      <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={handleChange} />
-      <button
-        onClick={handlePick}
-        className="rounded-xl px-3 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-sm"
-      >
-        Upload {label}
-      </button>
-      <button
-        onClick={handleClear}
-        className="rounded-xl px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-sm"
-      >
-        Clear
-      </button>
-      <div className="text-xs text-neutral-400 truncate">
-        {fileName ? fileName : currentText ? '(from text)' : 'No file selected'}
-      </div>
-    </div>
-  );
-}
 
 /* ================================== App ================================== */
 
@@ -169,8 +121,8 @@ export default function App() {
   const [myTeam, setMyTeam] = useState<MemberEx[]>(Array(6).fill(undefined) as any);
   const [enemyTeam, setEnemyTeam] = useState<MemberEx[]>([]);
 
+  // Prefill enemy team AND compute their maxHP so bars show "max/max" immediately.
   useEffect(() => {
-    // Prefill enemy team (≤6) from enemytrainer.txt. Attach auto berry if present.
     const init = dicts.enemySpecies.slice(0, 6).map(name => {
       const item = dicts.enemyItemBySpecies[name];
       const norm = normalizeBerryName(item);
@@ -186,7 +138,25 @@ export default function App() {
       } as MemberEx;
     });
     setEnemyTeam(init);
-  }, [dicts.enemySpecies.join('|'), dicts.enemyItemBySpecies, gen]);
+
+    (async () => {
+      const entries = await Promise.all(
+        init.map(async m => ({
+          name: m.name,
+          hp: await fetchMaxHPFromAPI(m.name, myText, enemyText, gen),
+        }))
+      );
+      const hpMap = Object.fromEntries(entries.map(e => [e.name, e.hp]));
+      setEnemyTeam(prev =>
+        prev.map(m =>
+          m && hpMap[m.name]
+            ? { ...m, maxHP: hpMap[m.name]!, curHP: Math.round((m.pct / 100) * hpMap[m.name]!) }
+            : m
+        )
+      );
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dicts.enemySpecies.join('|'), dicts.enemyItemBySpecies, gen, myText, enemyText]);
 
   function findMember(name: string): { team: 'my'|'enemy'|null, index: number, member?: MemberEx } {
     const e = enemyTeam.findIndex(m => m?.name?.toLowerCase() === name.toLowerCase());
@@ -221,6 +191,18 @@ export default function App() {
       };
       return next;
     });
+
+    (async () => {
+      const hp = await fetchMaxHPFromAPI(species, myText, enemyText, gen);
+      if (typeof hp !== 'number') return;
+      setMyTeam(prev => {
+        const next = [...prev];
+        const cur = next[slotIndex];
+        if (!cur || cur.name !== species) return prev;
+        next[slotIndex] = { ...cur, maxHP: hp, curHP: Math.round((cur.pct / 100) * hp) };
+        return next;
+      });
+    })();
   }
 
   // Change status/item (My Team only)
@@ -255,117 +237,68 @@ export default function App() {
   const onEditorChange = (i: number, v: string) => setTurns(p => p.map((t, idx) => (idx === i ? { ...t, text: v } : t)));
   const addTurn = () => setTurns(p => [...p, { id: p.length + 1, text: '', appliedChanges: [] }]);
 
-  async function doCalc(i: number) {
-    const t = turns[i];
+  // --- helper: deep clone a member (for snapshot metadata)
+  const cloneMember = (m?: MemberEx) =>
+    m
+      ? {
+          ...m,
+          berry: m.berry ? { ...m.berry } : undefined,
+          status: m.status ? { ...m.status } : undefined,
+        }
+      : undefined;
 
-    const base = parseActionFromLine(t.text);
-    if (!base) {
-      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, result: undefined, error: 'Line grammar: "<pokemon> use <move> on <pokemon>"' } : x));
+  // --- Undo logic (used both by the Undo button and pre-undo before Calc)
+  function undoRun(i: number) {
+    const t = turns[i];
+    const changes = (t?.appliedChanges ?? []).slice().reverse();
+    if (!changes.length) {
+      // Still clear flags so Run becomes green again if nothing to revert.
+      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, appliedChanges: [], chosen: undefined, runApplied: false } : x));
       return;
     }
 
-    const attackerCanon = resolveCanonicalName(base.attacker, dicts) ?? base.attacker;
-    const defenderCanon = resolveCanonicalName(base.defender, dicts) ?? base.defender;
+    changes.forEach(ch => {
+      if (ch.team === 'enemy') {
+        setEnemyTeam(prev => {
+          const next = [...prev];
+          const cur = next[ch.index];
+          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
+          next[ch.index] = {
+            ...cur,
+            pct: ch.prevPct,
+            curHP: ch.prevCurHP,
+            maxHP: ch.prevMaxHP,
+            berry: ch.prevBerry,
+            status: ch.prevStatus,
+            item: ch.prevItem,
+          };
+          return next;
+        });
+      } else {
+        setMyTeam(prev => {
+          const next = [...prev];
+          const cur = next[ch.index];
+          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
+          next[ch.index] = {
+            ...cur,
+            pct: ch.prevPct,
+            curHP: ch.prevCurHP,
+            maxHP: ch.prevMaxHP,
+            berry: ch.prevBerry,
+            status: ch.prevStatus,
+            item: ch.prevItem,
+          };
+          return next;
+        });
+      }
+    });
 
-    const defLoc = findMember(defenderCanon);
-    const currentPct   = defLoc.member?.pct ?? 100;
-    const currentStatus = defLoc.member?.status;
-
-    const appliedType = inferStatusFromMove(base.move);
-    const appliesStatus = appliedType ? makeInitialStatus(appliedType) : null;
-
-    setTurns(prev => prev.map((x, idx) => idx === i ? ({ ...x, loading: true, error: null }) : x));
-
-    try {
-      const enemyTextForBackend = normalizeEnemyTrainerTextForBackend(enemyText);
-      const resp = await fetch('/api/calc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          myText,
-          enemyText: enemyTextForBackend,
-          attacker: attackerCanon,
-          move: base.move,
-          defender: defenderCanon,
-          gen,
-        }),
-      });
-      if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
-
-      const data: CalcResponse = await resp.json();
-
-      const r = data.remaining;
-      const defMaxHP = data.defenderMaxHP;
-
-      const dmgLowPct  = 100 - r.highPct;
-      const dmgHighPct = 100 - r.lowPct;
-      const dmgCritPct = 100 - r.critPct;
-
-      const postLowPct  = Math.max(0, Math.round(currentPct - dmgLowPct));
-      const postHighPct = Math.max(0, Math.round(currentPct - dmgHighPct));
-      const postCritPct = Math.max(0, Math.round(currentPct - dmgCritPct));
-
-      const toHP = (pct: number | undefined) =>
-        typeof defMaxHP === 'number' && typeof pct === 'number'
-          ? Math.max(0, Math.round((pct / 100) * defMaxHP))
-          : undefined;
-
-      const postLowHP  = toHP(postLowPct);
-      const postHighHP = toHP(postHighPct);
-      const postCritHP = toHP(postCritPct);
-
-      const mkE = (postPct: number) => {
-        const st = appliesStatus ?? currentStatus;
-        if (!st) return null;
-        const { nextPct, lossPct, lossHP } = applyEndOfTurnResidual(Math.round(postPct), defMaxHP, st);
-        const note =
-          st.type === 'burn' ? 'after BRN' :
-          st.type === 'psn'  ? 'after PSN' :
-          st.type === 'tox'  ? 'after BPSN' :
-          st.type === 'par'  ? 'PRLYZ (no EoT dmg)' :
-          st.type === 'frz'  ? 'FRZN (no EoT dmg)' : '';
-        return { nextPct, lossPct, lossHP, note };
-      };
-
-      const eot = {
-        low:  mkE(postLowPct)  || undefined,
-        high: mkE(postHighPct) || undefined,
-        crit: mkE(postCritPct) || undefined,
-      };
-
-      const normalRaw = data?.debug?.rolls?.normal ?? [];
-      const critRaw   = data?.debug?.rolls?.crit ?? [];
-      const rollOptionsNormal = uniqSortedWithZero(normalRaw);
-      const rollOptionsCrit   = uniqSortedWithZero(critRaw);
-
-      setTurns(prev => prev.map((x, idx) => idx === i ? ({
-        ...x,
-        loading: false,
-        error: null,
-        result: {
-          defender: data.defender || defenderCanon,
-          lowPct:  postLowPct,  lowHP:  postLowHP,   lowBerry: null,
-          highPct: postHighPct, highHP: postHighHP,  highBerry: null,
-          critPct: postCritPct, critHP: postCritHP,  critBerry: null,
-          defenderMaxHP: defMaxHP,
-          eot,
-          appliesStatus,
-          rawRollsNormal: normalRaw,
-          rawRollsCrit: critRaw,
-          rollOptionsNormal,
-          rollOptionsCrit,
-        },
-        useCrit: false,
-        selectedRollIndex: 0,
-        runApplied: false,
-        appliedChanges: [],
-        chosen: undefined,
-      }) : x));
-    } catch (err: any) {
-      setTurns(prev => prev.map((x, idx) => idx === i ? ({ ...x, loading: false, error: err?.message || String(err), result: undefined }) : x));
-    }
+    setTurns(prev => prev.map((x, idx) => idx === i
+      ? { ...x, appliedChanges: [], chosen: undefined, runApplied: false }
+      : x));
   }
 
+  // --- Apply selected roll (Run)
   function applySelectedRoll(i: number) {
     const t = turns[i];
     if (!t?.result) return;
@@ -493,52 +426,130 @@ export default function App() {
     }));
   }
 
-  function undoRun(i: number) {
+  // --- Calc: now pre-undo any applied roll for THIS turn, then compute
+  async function doCalc(i: number) {
+    // 1) First time you calc this turn → store snapshot metadata
+    if (!turns[i]?.startSnapshot) {
+      const snap: TeamSnapshot = {
+        my: myTeam.map(cloneMember),
+        enemy: enemyTeam.map(cloneMember),
+      };
+      setTurns(prev => prev.map((x, idx) => (idx === i ? { ...x, startSnapshot: snap } : x)));
+    }
+
+    // 2) If this turn previously applied a roll, undo it before recalculating
+    if (turns[i]?.runApplied && (turns[i]?.appliedChanges?.length || 0) > 0) {
+      undoRun(i);
+      // Let state settle before reading current HP to feed into the calc
+      await new Promise(r => setTimeout(r, 0));
+    }
+
     const t = turns[i];
-    const changes = (t?.appliedChanges ?? []).slice().reverse();
-    if (!changes.length) return;
 
-    // Restore snapshots
-    changes.forEach(ch => {
-      if (ch.team === 'enemy') {
-        setEnemyTeam(prev => {
-          const next = [...prev];
-          const cur = next[ch.index];
-          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
-          next[ch.index] = {
-            ...cur,
-            pct: ch.prevPct,
-            curHP: ch.prevCurHP,
-            maxHP: ch.prevMaxHP,
-            berry: ch.prevBerry,
-            status: ch.prevStatus,
-            item: ch.prevItem,
-          };
-          return next;
-        });
-      } else {
-        setMyTeam(prev => {
-          const next = [...prev];
-          const cur = next[ch.index];
-          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
-          next[ch.index] = {
-            ...cur,
-            pct: ch.prevPct,
-            curHP: ch.prevCurHP,
-            maxHP: ch.prevMaxHP,
-            berry: ch.prevBerry,
-            status: ch.prevStatus,
-            item: ch.prevItem,
-          };
-          return next;
-        });
-      }
-    });
+    const base = parseActionFromLine(t.text);
+    if (!base) {
+      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, result: undefined, error: 'Line grammar: "<pokemon> use <move> on <pokemon>"' } : x));
+      return;
+    }
 
-    // Clear run state for this turn
-    setTurns(prev => prev.map((x, idx) => idx === i
-      ? { ...x, appliedChanges: [], chosen: undefined, runApplied: false }
-      : x));
+    const attackerCanon = resolveCanonicalName(base.attacker, dicts) ?? base.attacker;
+    const defenderCanon = resolveCanonicalName(base.defender, dicts) ?? base.defender;
+
+    const defLoc = findMember(defenderCanon);
+    const currentPct   = defLoc.member?.pct ?? 100;
+    const currentStatus = defLoc.member?.status;
+
+    const appliedType = inferStatusFromMove(base.move);
+    const appliesStatus = appliedType ? makeInitialStatus(appliedType) : null;
+
+    setTurns(prev => prev.map((x, idx) => idx === i ? ({ ...x, loading: true, error: null }) : x));
+
+    try {
+      const enemyTextForBackend = normalizeEnemyTrainerTextForBackend(enemyText);
+      const resp = await fetch('/api/calc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          myText,
+          enemyText: enemyTextForBackend,
+          attacker: attackerCanon,
+          move: base.move,
+          defender: defenderCanon,
+          gen,
+        }),
+      });
+      if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
+
+      const data: CalcResponse = await resp.json();
+
+      const r = data.remaining;
+      const defMaxHP = data.defenderMaxHP;
+
+      const dmgLowPct  = 100 - r.highPct;
+      const dmgHighPct = 100 - r.lowPct;
+      const dmgCritPct = 100 - r.critPct;
+
+      const postLowPct  = Math.max(0, Math.round(currentPct - dmgLowPct));
+      const postHighPct = Math.max(0, Math.round(currentPct - dmgHighPct));
+      const postCritPct = Math.max(0, Math.round(currentPct - dmgCritPct));
+
+      const toHP = (pct: number | undefined) =>
+        typeof defMaxHP === 'number' && typeof pct === 'number'
+          ? Math.max(0, Math.round((pct / 100) * defMaxHP))
+          : undefined;
+
+      const postLowHP  = toHP(postLowPct);
+      const postHighHP = toHP(postHighPct);
+      const postCritHP = toHP(postCritPct);
+
+      const mkE = (postPct: number) => {
+        const st = appliesStatus ?? currentStatus;
+        if (!st) return null;
+        const { nextPct, lossPct, lossHP } = applyEndOfTurnResidual(Math.round(postPct), defMaxHP, st);
+        const note =
+          st.type === 'burn' ? 'after BRN' :
+          st.type === 'psn'  ? 'after PSN' :
+          st.type === 'tox'  ? 'after BPSN' :
+          st.type === 'par'  ? 'PRLYZ (no EoT dmg)' :
+          st.type === 'frz'  ? 'FRZN (no EoT dmg)' : '';
+        return { nextPct, lossPct, lossHP, note };
+      };
+
+      const eot = {
+        low:  mkE(postLowPct)  || undefined,
+        high: mkE(postHighPct) || undefined,
+        crit: mkE(postCritPct) || undefined,
+      };
+
+      const normalRaw = data?.debug?.rolls?.normal ?? [];
+      const critRaw   = data?.debug?.rolls?.crit ?? [];
+      const rollOptionsNormal = uniqSortedWithZero(normalRaw);
+      const rollOptionsCrit   = uniqSortedWithZero(critRaw);
+
+      setTurns(prev => prev.map((x, idx) => idx === i ? ({
+        ...x,
+        loading: false,
+        error: null,
+        result: {
+          defender: data.defender || defenderCanon,
+          lowPct:  postLowPct,  lowHP:  postLowHP,   lowBerry: null,
+          highPct: postHighPct, highHP: postHighHP,  highBerry: null,
+          critPct: postCritPct, critHP: postCritHP,  critBerry: null,
+          defenderMaxHP: defMaxHP,
+          eot,
+          appliesStatus,
+          rawRollsNormal: normalRaw,
+          rawRollsCrit: critRaw,
+          rollOptionsNormal,
+          rollOptionsCrit,
+        },
+        useCrit: false,
+        selectedRollIndex: 0,
+        // NOTE: we do NOT touch runApplied here; undo already cleared it if needed.
+      }) : x));
+    } catch (err: any) {
+      setTurns(prev => prev.map((x, idx) => idx === i ? ({ ...x, loading: false, error: err?.message || String(err), result: undefined }) : x));
+    }
   }
 
   function deleteTurn(i: number) {
@@ -746,7 +757,7 @@ export default function App() {
 
               return (
                 <div key={t.id} className="flex items-stretch gap-3">
-                  {/* Left column now has a small "-" delete button before the "Turn N:" label */}
+                  {/* Left column: small "-" delete button before the "Turn N:" label */}
                   <div className="w-28 shrink-0 flex items-center justify-end pr-1 gap-2">
                     <button
                       onClick={() => deleteTurn(idx)}
@@ -765,12 +776,11 @@ export default function App() {
                       value={t.text}
                       onChange={(v)=>onEditorChange(idx, v)}
                       dicts={dicts}
-                      heightPx={64} // was 44 — taller so the line is easy to see
+                      heightPx={64}
                     />
                   </div>
 
                   <CalcButton onClick={() => doCalc(idx)} loading={t.loading} />
-                  {/* DeleteButton removed from the right side */}
 
                   {/* Roll selector + Crit toggle + Run + Undo */}
                   <div className="w-[760px] shrink-0">

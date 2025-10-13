@@ -1,7 +1,6 @@
-// src/logic/helpers.ts
 import type { Dictionaries } from './parsers';
 
-/** Strong alias key normalizer used across app & parsers */
+/** Canonicalize name by alias. */
 export function aliasKey(s: string) {
   return (s || '')
     .normalize('NFKD')
@@ -10,7 +9,6 @@ export function aliasKey(s: string) {
     .replace(/[^a-z0-9]/g, '');
 }
 
-/** Resolve a possibly-aliased name to the canonical species name, if known */
 export function resolveCanonicalName(name: string, dicts: Dictionaries): string | null {
   const ak = aliasKey(name);
   const all = [...dicts.mySpecies, ...dicts.enemySpecies];
@@ -18,9 +16,9 @@ export function resolveCanonicalName(name: string, dicts: Dictionaries): string 
   return null;
 }
 
-/** Keep enemy lines as-is but normalize minimal spacing for backend */
+/** Keep enemy lines minimal/normalized for backend parser. */
 export function normalizeEnemyTrainerTextForBackend(raw: string) {
-  const lines = raw
+  const lines = (raw || '')
     .replace(/\r\n/g, '\n')
     .split('\n')
     .map(l => l.trim())
@@ -36,8 +34,45 @@ export function normalizeEnemyTrainerTextForBackend(raw: string) {
   return fixed.slice(0, 6).join('\n');
 }
 
-/** Unique, sorted list of integer HP damage values that always includes 0 */
+/** Unique, ascending numbers; ensure a single leading 0. */
 export function uniqSortedWithZero(arr: number[]) {
-  const set = new Set<number>([0, ...arr.map(n => Math.max(0, Math.round(n)))]);
-  return Array.from(set).sort((a, b) => a - b);
+  const uniq = Array.from(new Set(arr.map(n => Math.max(0, Math.round(n))))).sort((a, b) => a - b);
+  if (uniq[0] !== 0) uniq.unshift(0);
+  return uniq;
+}
+
+/**
+ * Ask the backend for a Pokémon's max HP by doing a harmless self-calc.
+ * Returns undefined on failure (UI can fall back to %-only display).
+ */
+export async function fetchMaxHPFromAPI(
+  species: string,
+  myText: string,
+  enemyText: string,
+  gen: number
+): Promise<number | undefined> {
+  try {
+    const enemyTextForBackend = normalizeEnemyTrainerTextForBackend(enemyText);
+    const resp = await fetch('/api/calc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        myText,
+        enemyText: enemyTextForBackend,
+        attacker: species,
+        defender: species,
+        move: 'Tackle',
+        gen,
+      }),
+    });
+    if (!resp.ok) return undefined;
+    const data = await resp.json();
+    const hp: number | undefined =
+      typeof data?.defenderMaxHP === 'number'
+        ? data.defenderMaxHP
+        : (data?.debug?.defender?.maxHP as number | undefined);
+    return typeof hp === 'number' && hp > 0 ? hp : undefined;
+  } catch {
+    return undefined;
+  }
 }
