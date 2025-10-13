@@ -2,113 +2,34 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import QueryEditor from './components/QueryEditor';
 import TeamBox, { type TeamMember } from './components/TeamBox';
+import CalcButton from './components/CalcButton';
+// import DeleteButton from './components/DeleteButton'; // removed — now a small "-" to the left
+import CritToggleButton from './components/CritToggleButton';
+import RunButton from './components/RunButton';
+import UndoButton from './components/UndoButton';
+import RollSlider from './components/RollSlider';
+
 import { buildDictionaries, type Dictionaries } from './logic/parsers';
 import { parseActionFromLine } from './logic/grammar';
 import { inferBerryRule, normalizeBerryName } from './logic/hpMath';
-
-/* ===================== Helpers: alias/canonical + enemy normalizer ===================== */
-
-function aliasKey(s: string) {
-  return (s || '')
-    .normalize('NFKD')
-    .toLowerCase()
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function resolveCanonicalName(name: string, dicts: Dictionaries): string | null {
-  const ak = aliasKey(name);
-  const all = [...dicts.mySpecies, ...dicts.enemySpecies];
-  for (const n of all) if (aliasKey(n) === ak) return n;
-  return null;
-}
-
-/** Keep enemy lines as-is but normalize minimal spacing for backend */
-function normalizeEnemyTrainerTextForBackend(raw: string) {
-  const lines = raw
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map(l => l.trim())
-    .filter(Boolean);
-
-  const fixed = lines.map(line =>
-    line.replace(/@(?=\S)/g, '@ ').replace(/\s{2,}/g, ' ').trim()
-  );
-
-  return fixed.slice(0, 6).join('\n');
-}
-
-/* ===================== Status / Berry domain ===================== */
-
-type StatusType = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
-type StatusState = { type: StatusType; toxicStage?: number };
-
-function inferStatusFromMove(moveName: string): StatusType | null {
-  const m = moveName.trim().toLowerCase();
-  if (m === 'will o wisp' || m === 'will-o-wisp' || m === 'will-o’-wisp') return 'burn';
-  if (m === 'thunder wave' || m === 'nuzzle') return 'par';
-  if (m === 'toxic') return 'tox';
-  if (m === 'poison gas' || m === 'poison powder' || m === 'poisonpowder') return 'psn';
-  return null;
-}
-
-function makeInitialStatus(type: StatusType): StatusState {
-  if (type === 'tox') return { type: 'tox', toxicStage: 1 };
-  return { type };
-}
-
-function applyEndOfTurnResidual(
-  currentPct: number,
-  maxHP: number | undefined,
-  status: StatusState | undefined
-): { nextPct: number; lossPct: number; lossHP?: number; nextStatus?: StatusState } {
-  if (!status) return { nextPct: currentPct, lossPct: 0, lossHP: 0, nextStatus: undefined };
-
-  let lossPct = 0;
-  let nextStatus: StatusState | undefined = { ...status };
-
-  switch (status.type) {
-    case 'burn': lossPct = 100 / 16; break;   // 6.25%
-    case 'psn':  lossPct = 100 / 8;  break;   // 12.5%
-    case 'tox': {
-      const n = Math.max(1, status.toxicStage ?? 1);
-      lossPct = (100 / 16) * n;               // n * 6.25%
-      nextStatus.toxicStage = n + 1;
-      break;
-    }
-    case 'par':
-    case 'frz':
-    default: lossPct = 0; break;
-  }
-
-  const nextPct = Math.max(0, Math.round(currentPct - lossPct));
-  let lossHP: number | undefined = undefined;
-  if (typeof maxHP === 'number' && isFinite(maxHP)) {
-    lossHP = Math.max(0, Math.round((lossPct / 100) * maxHP));
-  }
-  return { nextPct, lossPct: Math.round(lossPct), lossHP, nextStatus };
-}
-
-type BerryName =
-  | 'oran' | 'sitrus'
-  | 'rawst' | 'pecha' | 'cheri' | 'chesto' | 'aspear';
-
-function berryCuresStatus(berry: BerryName, status: StatusType): boolean {
-  switch (berry) {
-    case 'rawst':  return status === 'burn';
-    case 'pecha':  return status === 'psn' || status === 'tox';
-    case 'cheri':  return status === 'par';
-    case 'aspear': return status === 'frz';
-    case 'chesto': return false;
-    default:       return false;
-  }
-}
+import {
+  inferStatusFromMove,
+  applyEndOfTurnResidual,
+  makeInitialStatus,
+  type StatusType,
+  type StatusState,
+} from './logic/status';
+import {
+  resolveCanonicalName,
+  normalizeEnemyTrainerTextForBackend,
+  uniqSortedWithZero,
+} from './logic/helpers';
 
 /* ===================== Local types ===================== */
 
 type BerryState = { name: string; consumed: boolean };
 
-export type MemberEx = TeamMember & {
+type MemberEx = TeamMember & {
   berry?: BerryState;
   status?: StatusState;
 };
@@ -131,25 +52,50 @@ type TurnLine = {
   result?: {
     defender: string;
     defenderMaxHP?: number;
-    lowPct: number;  lowHP?: number;
-    highPct: number; highHP?: number;
-    critPct: number; critHP?: number;
+
+    lowPct: number;  lowHP?: number;  lowBerry?: { name: string; healHP: number; healPct: number } | null;
+    highPct: number; highHP?: number; highBerry?: { name: string; healHP: number; healPct: number } | null;
+    critPct: number; critHP?: number; critBerry?: { name: string; healHP: number; healPct: number } | null;
     eot?: {
       low?: { nextPct: number; lossPct: number; lossHP?: number; note: string };
       high?: { nextPct: number; lossPct: number; lossHP?: number; note: string };
       crit?: { nextPct: number; lossPct: number; lossHP?: number; note: string };
     };
     appliesStatus?: StatusState | null;
+
+    rawRollsNormal?: number[];
+    rawRollsCrit?: number[];
+    rollOptionsNormal?: number[];
+    rollOptionsCrit?: number[];
+  };
+  chosen?: {
+    attacker: string;
+    move: string;
+    defender: string;
+    finalPct: number;
+    finalHP?: number;
+    maxHP?: number;
+    berryUsedName?: string;
+    eotType?: 'burn' | 'poison';
+    eotLossPct?: number;
   };
   appliedChanges?: AppliedChange[];
   loading?: boolean;
   error?: string | null;
+
+  // UI state
+  useCrit?: boolean;
+  selectedRollIndex?: number;
+
+  // Run-once gate
+  runApplied?: boolean;
 };
 
-type CalcResponseA = {
+type CalcResponse = {
   defender: string;
   defenderMaxHP: number;
   remaining: { lowPct: number; lowHP: number; highPct: number; highHP: number; critPct: number; critHP: number };
+  debug?: { rolls?: { normal?: number[]; crit?: number[] } };
 };
 
 /* ===================== Upload picker ===================== */
@@ -295,7 +241,6 @@ export default function App() {
       const cur = next[index];
       if (!cur) return prev;
 
-      // Reset berry object based on selected item
       const norm = normalizeBerryName(item);
       const rule = inferBerryRule(norm, gen);
       const berry: BerryState | undefined = rule ? { name: rule.name, consumed: false } : undefined;
@@ -310,74 +255,22 @@ export default function App() {
   const onEditorChange = (i: number, v: string) => setTurns(p => p.map((t, idx) => (idx === i ? { ...t, text: v } : t)));
   const addTurn = () => setTurns(p => [...p, { id: p.length + 1, text: '', appliedChanges: [] }]);
 
-  /** Roll back everything this turn previously applied (HP, status, berry),
-   * so switching rolls “unconsumes” berries and undoes effects cleanly. */
-  function rollbackTurnChanges(turnIndex: number) {
-    const t = turns[turnIndex];
-    const changes = (t.appliedChanges ?? []).slice().reverse();
-
-    changes.forEach(ch => {
-      if (ch.team === 'enemy') {
-        setEnemyTeam(prev => {
-          const next = [...prev];
-          const cur = next[ch.index];
-          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
-          next[ch.index] = {
-            ...cur,
-            pct: ch.prevPct,
-            curHP: ch.prevCurHP,
-            maxHP: ch.prevMaxHP,
-            berry: ch.prevBerry,     // ← restores consumed → unconsumed/undefined
-            status: ch.prevStatus,
-            item: ch.prevItem,
-          };
-          return next;
-        });
-      } else {
-        setMyTeam(prev => {
-          const next = [...prev];
-          const cur = next[ch.index];
-          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
-          next[ch.index] = {
-            ...cur,
-            pct: ch.prevPct,
-            curHP: ch.prevCurHP,
-            maxHP: ch.prevMaxHP,
-            berry: ch.prevBerry,     // ← restores consumed → unconsumed/undefined
-            status: ch.prevStatus,
-            item: ch.prevItem,
-          };
-          return next;
-        });
-      }
-    });
-
-    // Clear the turn’s history so the next application records a fresh baseline
-    setTurns(prev => prev.map((x, idx) => idx === turnIndex ? { ...x, appliedChanges: [] } : x));
-  }
-
   async function doCalc(i: number) {
     const t = turns[i];
 
-    // Parse "<pokemon> use <move> on <pokemon>"
     const base = parseActionFromLine(t.text);
     if (!base) {
-      setTurns(prev => prev.map((x, idx) =>
-        idx === i ? { ...x, result: undefined, error: 'Line grammar: "<pokemon> use <move> on <pokemon>"' } : x
-      ));
+      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, result: undefined, error: 'Line grammar: "<pokemon> use <move> on <pokemon>"' } : x));
       return;
     }
 
-    // Canonicalize names
     const attackerCanon = resolveCanonicalName(base.attacker, dicts) ?? base.attacker;
     const defenderCanon = resolveCanonicalName(base.defender, dicts) ?? base.defender;
 
-    // Read defender state (matters for turn 2+)
     const defLoc = findMember(defenderCanon);
     const currentPct   = defLoc.member?.pct ?? 100;
     const currentStatus = defLoc.member?.status;
 
-    // Status this move would apply (preview only)
     const appliedType = inferStatusFromMove(base.move);
     const appliesStatus = appliedType ? makeInitialStatus(appliedType) : null;
 
@@ -399,14 +292,13 @@ export default function App() {
       });
       if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
 
-      const data: CalcResponseA = await resp.json();
+      const data: CalcResponse = await resp.json();
 
-      // Convert API "remaining from full" → DAMAGE%, then subtract from CURRENT%
       const r = data.remaining;
       const defMaxHP = data.defenderMaxHP;
 
-      const dmgLowPct  = 100 - r.highPct; // low roll = lower dmg branch
-      const dmgHighPct = 100 - r.lowPct;  // high roll = higher dmg branch
+      const dmgLowPct  = 100 - r.highPct;
+      const dmgHighPct = 100 - r.lowPct;
       const dmgCritPct = 100 - r.critPct;
 
       const postLowPct  = Math.max(0, Math.round(currentPct - dmgLowPct));
@@ -422,7 +314,6 @@ export default function App() {
       const postHighHP = toHP(postHighPct);
       const postCritHP = toHP(postCritPct);
 
-      // EoT preview from these post-hit numbers
       const mkE = (postPct: number) => {
         const st = appliesStatus ?? currentStatus;
         if (!st) return null;
@@ -442,33 +333,48 @@ export default function App() {
         crit: mkE(postCritPct) || undefined,
       };
 
+      const normalRaw = data?.debug?.rolls?.normal ?? [];
+      const critRaw   = data?.debug?.rolls?.crit ?? [];
+      const rollOptionsNormal = uniqSortedWithZero(normalRaw);
+      const rollOptionsCrit   = uniqSortedWithZero(critRaw);
+
       setTurns(prev => prev.map((x, idx) => idx === i ? ({
         ...x,
         loading: false,
         error: null,
         result: {
           defender: data.defender || defenderCanon,
-          lowPct:  postLowPct,  lowHP:  postLowHP,
-          highPct: postHighPct, highHP: postHighHP,
-          critPct: postCritPct, critHP: postCritHP,
+          lowPct:  postLowPct,  lowHP:  postLowHP,   lowBerry: null,
+          highPct: postHighPct, highHP: postHighHP,  highBerry: null,
+          critPct: postCritPct, critHP: postCritHP,  critBerry: null,
           defenderMaxHP: defMaxHP,
           eot,
           appliesStatus,
+          rawRollsNormal: normalRaw,
+          rawRollsCrit: critRaw,
+          rollOptionsNormal,
+          rollOptionsCrit,
         },
+        useCrit: false,
+        selectedRollIndex: 0,
+        runApplied: false,
+        appliedChanges: [],
+        chosen: undefined,
       }) : x));
     } catch (err: any) {
-      setTurns(prev => prev.map((x, idx) =>
-        idx === i ? ({ ...x, loading: false, error: err?.message || String(err), result: undefined }) : x
-      ));
+      setTurns(prev => prev.map((x, idx) => idx === i ? ({ ...x, loading: false, error: err?.message || String(err), result: undefined }) : x));
     }
   }
 
-  function applyResult(i: number, kind: 'low'|'high'|'crit') {
-    // IMPORTANT: unconsume-on-switch → roll back previous application for this turn first
-    rollbackTurnChanges(i);
-
+  function applySelectedRoll(i: number) {
     const t = turns[i];
     if (!t?.result) return;
+    if (t.runApplied) return;
+
+    const parsed = parseActionFromLine(t.text);
+    const attackerName = parsed?.attacker ?? '';
+    const moveName = parsed?.move ?? '';
+    const defenderName = parsed?.defender ?? t.result.defender;
 
     const { defender, defenderMaxHP } = t.result;
     const defCanon = resolveCanonicalName(defender, dicts) ?? defender;
@@ -479,71 +385,61 @@ export default function App() {
     const prevPct    = loc.member?.pct ?? 100;
     const prevMaxHP  = loc.member?.maxHP;
     const prevCurHP  = loc.member?.curHP;
-    const prevBerry  = loc.member?.berry;     // ← this snapshot lets us restore unconsumed berry
+    const prevBerry  = loc.member?.berry;
     const prevStatus = loc.member?.status;
     const prevItem   = loc.member?.item;
 
-    // Base post-hit remaining from the clicked roll
-    let postPct = 100;
-    let postHP: number | undefined;
-    if (kind === 'low')  { postPct = Math.round(t.result.lowPct);  postHP = t.result.lowHP;  }
-    if (kind === 'high') { postPct = Math.round(t.result.highPct); postHP = t.result.highHP; }
-    if (kind === 'crit') { postPct = Math.round(t.result.critPct); postHP = t.result.critHP; }
+    const options = (t.useCrit ? t.result.rollOptionsCrit : t.result.rollOptionsNormal) ?? [0];
+    const selectedIdx = Math.max(0, Math.min((t.selectedRollIndex ?? 0), options.length - 1));
+    const selectedDamageHP = options[selectedIdx] ?? 0;
 
-    // Determine maxHP
     const maxHP = typeof defenderMaxHP === 'number' && defenderMaxHP > 0
       ? defenderMaxHP
       : (typeof prevMaxHP === 'number' ? prevMaxHP : undefined);
 
-    if (typeof postHP !== 'number' && typeof maxHP === 'number') {
-      postHP = Math.max(0, Math.round((postPct / 100) * maxHP));
-    }
+    if (typeof maxHP !== 'number') return;
 
-    // ===== Berry trigger & consumption (heal right after hit) =====
+    let curHPNow: number = typeof prevCurHP === 'number'
+      ? prevCurHP
+      : Math.max(0, Math.round((prevPct / 100) * maxHP));
+
+    let postHP = Math.max(0, curHPNow - Math.max(0, Math.round(selectedDamageHP)));
+    let postPct = Math.max(0, Math.round((postHP / maxHP) * 100));
+
     let berry = prevBerry;
-    let heldBerryName: string | undefined;
-
-    // If a berry exists:
-    if (berry) {
-      // If it was previously consumed, do NOT allow it to re-proc on later turns
-      // But within THIS turn, rollbackTurnChanges restored prevBerry, so consumed is accurate.
-      heldBerryName = berry.consumed ? undefined : berry.name;
-    } else {
-      // If there wasn't a berry object yet, infer from item once for this slot
-      const inferred = normalizeBerryName(loc.member?.item);
-      if (inferred) {
-        berry = { name: inferred, consumed: false };
-        heldBerryName = inferred;
-      }
-    }
-
+    let heldBerryName: string | undefined =
+      (berry && !berry.consumed) ? berry.name : normalizeBerryName(loc.member?.item);
     const rule = inferBerryRule(heldBerryName, gen);
-    if (rule && postPct <= rule.thresholdPct) {
-      if (typeof maxHP === 'number' && typeof postHP === 'number') {
+    let berryUsedName: string | undefined;
+
+    if (rule) {
+      if (postPct <= rule.thresholdPct) {
         const healHP = rule.kind === 'heal-flat'
           ? rule.healHP
           : Math.round((rule.healPct / 100) * maxHP);
-        const newHP = Math.min(maxHP, postHP + healHP);
-        postHP = newHP;
-        postPct = Math.max(0, Math.round((newHP / maxHP) * 100));
-      } else if (rule.kind === 'heal-pct') {
-        postPct = Math.min(100, postPct + rule.healPct);
-      }
-      // Mark consumed once; switching rolls is handled by rollback → restores prevBerry
-      if (berry && heldBerryName && berry.name.toLowerCase() === heldBerryName.toLowerCase()) {
-        berry = { ...berry, consumed: true };
+        postHP = Math.min(maxHP, postHP + healHP);
+        postPct = Math.max(0, Math.round((postHP / maxHP) * 100));
+
+        if (heldBerryName) {
+          if (berry && berry.name.toLowerCase() === heldBerryName.toLowerCase()) {
+            berry = { ...berry, consumed: true };
+          } else if (prevBerry == null) {
+            berry = { name: heldBerryName, consumed: true };
+          }
+          berryUsedName = heldBerryName;
+        }
       }
     }
 
-    // ===== End-of-turn residual AFTER berry heal =====
     let newStatus = prevStatus;
     if (t.result.appliesStatus) newStatus = t.result.appliesStatus;
 
     let finalPct = postPct;
     let finalStatus = newStatus;
-
+    let eotLossPct: number | undefined;
     if (newStatus) {
       const e = applyEndOfTurnResidual(finalPct, maxHP, newStatus);
+      eotLossPct = e.lossPct > 0 ? e.lossPct : undefined;
       finalPct = e.nextPct;
       if (newStatus.type === 'tox') {
         const stage = (newStatus.toxicStage ?? 1) + 1;
@@ -551,29 +447,41 @@ export default function App() {
       }
     }
 
-    const finalHP = typeof maxHP === 'number'
-      ? Math.max(0, Math.round((finalPct / 100) * maxHP))
-      : postHP;
+    const finalHP = Math.max(0, Math.round((finalPct / 100) * maxHP));
 
-    // Commit to the slot
     setMemberByLoc(loc as any, cur => {
       const existing = cur ?? ({ name: defCanon, pct: 100 } as MemberEx);
       return {
         ...existing,
         pct: Math.round(finalPct),
         maxHP: maxHP ?? existing.maxHP,
-        curHP: typeof finalHP === 'number' ? finalHP : existing.curHP,
+        curHP: finalHP,
         berry,
         status: finalStatus,
       };
     });
 
-    // Track change so delete/roll-switch can undo perfectly
     setTurns(prev => prev.map((x, idx) => {
       if (idx !== i) return x;
       const applied = x.appliedChanges ?? [];
+      let eotType: 'burn' | 'poison' | undefined;
+      if (newStatus?.type === 'burn') eotType = 'burn';
+      if (newStatus?.type === 'psn' || newStatus?.type === 'tox') eotType = 'poison';
+
       return {
         ...x,
+        runApplied: true,
+        chosen: {
+          attacker: attackerName || '',
+          move: moveName || '',
+          defender: defenderName || defCanon,
+          finalPct: Math.round(finalPct),
+          finalHP,
+          maxHP,
+          berryUsedName,
+          eotType,
+          eotLossPct,
+        },
         appliedChanges: [
           ...applied,
           {
@@ -585,10 +493,59 @@ export default function App() {
     }));
   }
 
+  function undoRun(i: number) {
+    const t = turns[i];
+    const changes = (t?.appliedChanges ?? []).slice().reverse();
+    if (!changes.length) return;
+
+    // Restore snapshots
+    changes.forEach(ch => {
+      if (ch.team === 'enemy') {
+        setEnemyTeam(prev => {
+          const next = [...prev];
+          const cur = next[ch.index];
+          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
+          next[ch.index] = {
+            ...cur,
+            pct: ch.prevPct,
+            curHP: ch.prevCurHP,
+            maxHP: ch.prevMaxHP,
+            berry: ch.prevBerry,
+            status: ch.prevStatus,
+            item: ch.prevItem,
+          };
+          return next;
+        });
+      } else {
+        setMyTeam(prev => {
+          const next = [...prev];
+          const cur = next[ch.index];
+          if (!cur || cur.name?.toLowerCase() !== ch.name.toLowerCase()) return next;
+          next[ch.index] = {
+            ...cur,
+            pct: ch.prevPct,
+            curHP: ch.prevCurHP,
+            maxHP: ch.prevMaxHP,
+            berry: ch.prevBerry,
+            status: ch.prevStatus,
+            item: ch.prevItem,
+          };
+          return next;
+        });
+      }
+    });
+
+    // Clear run state for this turn
+    setTurns(prev => prev.map((x, idx) => idx === i
+      ? { ...x, appliedChanges: [], chosen: undefined, runApplied: false }
+      : x));
+  }
+
   function deleteTurn(i: number) {
     const t = turns[i];
     const changes = (t.appliedChanges ?? []).slice().reverse();
 
+    // Revert if needed
     changes.forEach(ch => {
       if (ch.team === 'enemy') {
         setEnemyTeam(prev => {
@@ -626,6 +583,55 @@ export default function App() {
     });
 
     setTurns(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  // -------- Export Lines (.txt) --------
+  function exportLines() {
+    const lines: string[] = [];
+
+    turns.forEach((t, idx) => {
+      const n = idx + 1;
+      const c = t.chosen;
+      if (!c) return;
+
+      const att = c.attacker || '(attacker)';
+      const mv  = c.move || '(move)';
+      const def = c.defender || '(defender)';
+
+      const hpStr =
+        typeof c.finalHP === 'number' && typeof c.maxHP === 'number'
+          ? `${c.finalHP}/${c.maxHP} (${c.finalPct}%)`
+          : `${c.finalPct}%`;
+
+      let suffix = `-> ${def} has ${hpStr} remaining health`;
+
+      if (c.berryUsedName) {
+        suffix += ` after consuming ${c.berryUsedName} berry`;
+      }
+      if (c.eotType && typeof c.eotLossPct === 'number' && c.eotLossPct > 0) {
+        const word = c.eotType === 'burn' ? 'burn' : 'poison';
+        suffix += ` after ${word} damage of ${c.eotLossPct}%`;
+      }
+
+      lines.push(`Turn ${n}: ${att} use ${mv} on ${def} ${suffix}`);
+    });
+
+    if (!lines.length) {
+      alert('No applied turns to export.');
+      return;
+    }
+
+    const content = lines.join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const date = new Date().toISOString().replace(/[:T]/g, '-').split('.')[0];
+    a.href = url;
+    a.download = `plan_${date}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   const myCollection = dicts.mySpecies;
@@ -721,99 +727,90 @@ export default function App() {
         <section className="rounded-2xl border border-neutral-800 p-4 bg-neutral-900/40">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold">Planner</h2>
-            <button onClick={addTurn} className="rounded-xl px-3 py-2 bg-emerald-600 hover:bg-emerald-500 transition text-sm font-semibold shadow">+ Add Turn</button>
+            <div className="flex items-center gap-2">
+              <button onClick={addTurn} className="rounded-xl px-3 py-2 bg-emerald-600 hover:bg-emerald-500 transition text-sm font-semibold shadow">
+                + Add Turn
+              </button>
+              <button onClick={exportLines} className="rounded-xl px-3 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition text-sm font-semibold shadow">
+                Export Lines
+              </button>
+            </div>
           </div>
 
           <div className="space-y-3">
-            {turns.map((t, idx) => (
-              <div key={t.id} className="flex items-stretch gap-3">
-                <div className="w-20 shrink-0 flex items-center justify-end pr-1">
-                  <div className="text-sm font-semibold text-neutral-300">Turn {idx+1}:</div>
+            {turns.map((t, idx) => {
+              const rollOpts = t.useCrit
+                ? (t.result?.rollOptionsCrit ?? [0])
+                : (t.result?.rollOptionsNormal ?? [0]);
+              const selectedIdx = Math.max(0, Math.min((t.selectedRollIndex ?? 0), rollOpts.length - 1));
+
+              return (
+                <div key={t.id} className="flex items-stretch gap-3">
+                  {/* Left column now has a small "-" delete button before the "Turn N:" label */}
+                  <div className="w-28 shrink-0 flex items-center justify-end pr-1 gap-2">
+                    <button
+                      onClick={() => deleteTurn(idx)}
+                      className="h-6 w-6 inline-flex items-center justify-center rounded-md border border-neutral-700 bg-neutral-800 hover:bg-neutral-700 text-sm"
+                      title="Delete turn"
+                      aria-label="Delete turn"
+                    >
+                      –
+                    </button>
+                    <div className="text-sm font-semibold text-neutral-300">Turn {idx+1}:</div>
+                  </div>
+
+                  {/* Taller query editor for readability */}
+                  <div className="flex-1 rounded-xl border border-neutral-800 bg-neutral-900/60 shadow-inner relative z-10">
+                    <QueryEditor
+                      value={t.text}
+                      onChange={(v)=>onEditorChange(idx, v)}
+                      dicts={dicts}
+                      heightPx={64} // was 44 — taller so the line is easy to see
+                    />
+                  </div>
+
+                  <CalcButton onClick={() => doCalc(idx)} loading={t.loading} />
+                  {/* DeleteButton removed from the right side */}
+
+                  {/* Roll selector + Crit toggle + Run + Undo */}
+                  <div className="w-[760px] shrink-0">
+                    {t.error && <div className="h-[44px] flex items-center text-xs text-red-400">{t.error}</div>}
+                    {t.result && !t.error && (
+                      <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2">
+                        <RollSlider
+                          label={t.useCrit ? 'Crit Rolls' : 'Normal Rolls'}
+                          options={rollOpts}
+                          selectedIndex={selectedIdx}
+                          onChange={(vi) => setTurns(prev => prev.map((x, j) => j === idx ? { ...x, selectedRollIndex: vi } : x))}
+                        />
+
+                        <CritToggleButton
+                          active={!!t.useCrit}
+                          onToggle={() => setTurns(prev => prev.map((x, j) => j === idx
+                            ? { ...x, useCrit: !x.useCrit, selectedRollIndex: 0 }
+                            : x))}
+                        />
+
+                        <RunButton
+                          onClick={() => applySelectedRoll(idx)}
+                          disabled={!!t.runApplied}
+                        />
+
+                        <UndoButton
+                          onClick={() => undoRun(idx)}
+                          disabled={!t.runApplied || !(t.appliedChanges && t.appliedChanges.length)}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
-
-                <div className="flex-1 rounded-xl border border-neutral-800 bg-neutral-900/60 shadow-inner relative z-10">
-                  <QueryEditor value={t.text} onChange={(v)=>onEditorChange(idx, v)} dicts={dicts} />
-                </div>
-
-                <button
-                  onClick={()=>doCalc(idx)}
-                  disabled={t.loading}
-                  className="shrink-0 h-[44px] rounded-xl px-3 bg-sky-600 hover:bg-sky-500 transition text-sm font-semibold shadow disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {t.loading ? '...' : 'Calc'}
-                </button>
-
-                <button
-                  onClick={()=>deleteTurn(idx)}
-                  className="shrink-0 h-[44px] rounded-xl px-3 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition text-sm font-semibold shadow"
-                >
-                  Delete
-                </button>
-
-                <div className="w-[580px] shrink-0">
-                  {t.error && <div className="h-[44px] flex items-center text-xs text-red-400">{t.error}</div>}
-                  {t.result && !t.error && (
-                    <div className="grid grid-cols-3 gap-2">
-                      {/* Low = dark yellow */}
-                      <button
-                        onClick={()=>applyResult(idx, 'low')}
-                        className="rounded-lg px-2 py-2 flex flex-col items-center justify-center text-center border bg-gradient-to-b from-yellow-600/45 to-yellow-700/30 border-yellow-700/70 hover:from-yellow-600/55 hover:to-yellow-700/40 transition"
-                        title="Apply Low Roll"
-                      >
-                        <div className="text-[10px] text-yellow-200/90 leading-tight">Low Roll</div>
-                        <div className="text-base font-bold text-yellow-50">
-                          {Math.round(t.result.lowPct)}%{t.result.lowHP != null ? ` (${t.result.lowHP})` : ''}
-                        </div>
-                        {t.result.eot?.low && (
-                          <div className="text-[10px] text-neutral-300">
-                            EoT: {t.result.eot.low.nextPct}%{typeof t.result.eot.low.lossHP === 'number' ? ` (−${t.result.eot.low.lossHP})` : ` (−${t.result.eot.low.lossPct}%)`} {t.result.eot.low.note}
-                          </div>
-                        )}
-                      </button>
-
-                      {/* High = dark orange */}
-                      <button
-                        onClick={()=>applyResult(idx, 'high')}
-                        className="rounded-lg px-2 py-2 flex flex-col items-center justify-center text-center border bg-gradient-to-b from-orange-600/45 to-orange-700/30 border-orange-700/70 hover:from-orange-600/55 hover:to-orange-700/40 transition"
-                        title="Apply High Roll"
-                      >
-                        <div className="text-[10px] text-orange-200/90 leading-tight">High Roll</div>
-                        <div className="text-base font-bold text-orange-50">
-                          {Math.round(t.result.highPct)}%{t.result.highHP != null ? ` (${t.result.highHP})` : ''}
-                        </div>
-                        {t.result.eot?.high && (
-                          <div className="text-[10px] text-neutral-300">
-                            EoT: {t.result.eot.high.nextPct}%{typeof t.result.eot.high.lossHP === 'number' ? ` (−${t.result.eot.high.lossHP})` : ` (−${t.result.eot.high.lossPct}%)`} {t.result.eot.high.note}
-                          </div>
-                        )}
-                      </button>
-
-                      {/* Crit = dark red */}
-                      <button
-                        onClick={()=>applyResult(idx, 'crit')}
-                        className="rounded-lg px-2 py-2 flex flex-col items-center justify-center text-center border bg-gradient-to-b from-red-700/50 to-red-800/40 border-red-800/70 hover:from-red-700/60 hover:to-red-800/50 transition"
-                        title="Apply Crit"
-                      >
-                        <div className="text-[10px] text-red-200/90 leading-tight">Crit</div>
-                        <div className="text-base font-bold text-red-50">
-                          {Math.round(t.result.critPct)}%{t.result.critHP != null ? ` (${t.result.critHP})` : ''}
-                        </div>
-                        {t.result.eot?.crit && (
-                          <div className="text-[10px] text-neutral-300">
-                            EoT: {t.result.eot.crit.nextPct}%{typeof t.result.eot.crit.lossHP === 'number' ? ` (−${t.result.eot.crit.lossHP})` : ` (−${t.result.eot.crit.lossPct}%)`} {t.result.eot.crit.note}
-                          </div>
-                        )}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
         <footer className="text-xs text-neutral-500 mt-6">
-          <p>Healing/status items persist in your team box; berries consume once and switching rolls within a turn will “unconsume” them if the new roll wouldn’t proc.</p>
+          <p>Healing/status items persist in your team box; berries auto-consume when thresholds are reached. Use ▶ to apply the selected roll, ↩ to undo, and the small “–” to delete a turn.</p>
         </footer>
       </div>
     </div>

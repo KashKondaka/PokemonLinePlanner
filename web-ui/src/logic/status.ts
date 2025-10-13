@@ -1,47 +1,32 @@
 // src/logic/status.ts
-
-export type StatusType = 'burn' | 'psn' | 'tox' | 'par';
+export type StatusType = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
 
 export type StatusState = {
   type: StatusType;
-  // For badly poisoned (Toxic), the stage starts at 1 (i.e., 1/16),
-  // and increases by +1 each end of turn while active.
   toxicStage?: number;
 };
 
-/** Very small deterministic move→status mapper.
- *  (We avoid probabilistic moves like Scald/Flamethrower to keep it simple.)
- */
+/** Deterministic move→status mapper (kept simple) */
 export function inferStatusFromMove(moveName: string): StatusType | null {
   const m = moveName.trim().toLowerCase();
   if (m === 'will o wisp' || m === 'will-o-wisp' || m === 'will-o’-wisp') return 'burn';
-  if (m === 'thunder wave') return 'par';
+  if (m === 'thunder wave' || m === 'nuzzle') return 'par';
   if (m === 'toxic') return 'tox';
   if (m === 'poison gas' || m === 'poison powder' || m === 'poisonpowder') return 'psn';
   return null;
 }
 
-/** User-friendly label for chips/notes */
 export function statusLabel(s: StatusState | undefined) {
   if (!s) return '';
   if (s.type === 'burn') return 'BRN';
-  if (s.type === 'par') return 'PAR';
-  if (s.type === 'psn') return 'PSN';
-  if (s.type === 'tox') return `TOX${s.toxicStage ? `(${s.toxicStage})` : ''}`;
+  if (s.type === 'par')  return 'PAR';
+  if (s.type === 'psn')  return 'PSN';
+  if (s.type === 'tox')  return `TOX${s.toxicStage ? `(${s.toxicStage})` : ''}`;
+  if (s.type === 'frz')  return 'FRZ';
   return '';
 }
 
-/** Compute end-of-turn residual on current HP% given a status.
- *  Returns newPct, hpLoss (absolute), and nextToxicStage (if applicable).
- *
- *  Conventions used (modern gens):
- *   - Burn: 1/16 max HP
- *   - Poison: 1/8 max HP
- *   - Badly Poisoned (Toxic): n/16 this turn, then n+=1
- *   - Paralysis: no EoT damage
- *
- *  If maxHP is unknown, we do pure percent math (rounded).
- */
+/** End-of-turn residual on current HP% given a status. */
 export function applyEndOfTurnResidual(
   currentPct: number,
   maxHP: number | undefined,
@@ -66,12 +51,12 @@ export function applyEndOfTurnResidual(
       break;
     }
     case 'par':
+    case 'frz':
     default:
-      lossPct = 0;
+      lossPct = 0; // no EoT damage
       break;
   }
 
-  // Cap loss so we never go below 0.
   const nextPct = Math.max(0, Math.round(currentPct - lossPct));
 
   let lossHP: number | undefined = undefined;
@@ -82,7 +67,7 @@ export function applyEndOfTurnResidual(
   return { nextPct, lossPct: Math.round(lossPct), lossHP, nextStatus };
 }
 
-/** If a move applies a new status, construct the initial state. */
+/** Initial state for a newly-applied status */
 export function makeInitialStatus(type: StatusType): StatusState {
   if (type === 'tox') return { type: 'tox', toxicStage: 1 };
   return { type };

@@ -1,4 +1,3 @@
-// src/components/QueryEditor.tsx
 import React, { useEffect, useRef } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { registerLanguageAndTheme, LANG_ID, THEME_ID } from '../logic/monacoLanguage';
@@ -19,9 +18,11 @@ type Props = {
   value: string;
   onChange: (v: string) => void;
   dicts: Dictionaries;
+  /** NEW: allow a taller editor so the line is easier to read */
+  heightPx?: number;
 };
 
-export default function QueryEditor({ value, onChange, dicts }: Props) {
+export default function QueryEditor({ value, onChange, dicts, heightPx = 64 }: Props) {
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<string[]>([]);
   const myAliasesRef = useRef<Set<string>>(new Set());
@@ -47,7 +48,7 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
       fontLigatures: true,
       lineNumbers: 'off',
       minimap: { enabled: false },
-      wordWrap: 'off',
+      wordWrap: 'on', // was 'off' — wrap long lines so the single-line command is readable
       roundedSelection: true,
       renderLineHighlight: 'none',
       padding: { top: 8, bottom: 8 },
@@ -121,7 +122,7 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
       onIdx = rel === -1 ? -1 : afterUseIdx + rel + (rest[rel] === ' ' ? 1 : 0);
     }
 
-    const lineNumber = 1; // single-line editor
+    const lineNumber = 1; // single-line model (we only wrap visually)
     const decorations: any[] = [];
 
     // --- Attacker range + color (even if "use" not typed yet)
@@ -129,7 +130,6 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
     if (useIdx !== -1) {
       attackerEnd = useIdx;
     } else {
-      // if no "use" yet, color the first token typed
       const firstWordMatch = text.match(/^\s*([^\s]+)/);
       attackerEnd = firstWordMatch ? (firstWordMatch.index! + firstWordMatch[0].length) : -1;
     }
@@ -207,7 +207,7 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
 
   return (
     <Editor
-      height="44px"
+      height={`${heightPx}px`}
       language={LANG_ID}
       value={value}
       onChange={(v) => onChange(v || '')}
@@ -217,7 +217,7 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
         minimap: { enabled: false },
         fontSize: 14,
         fontLigatures: true,
-        wordWrap: 'off',
+        wordWrap: 'on', // wrap visually to show the full command
         padding: { top: 8, bottom: 8 },
         quickSuggestions: { other: true, comments: true, strings: true },
         quickSuggestionsDelay: 0,
@@ -228,7 +228,7 @@ export default function QueryEditor({ value, onChange, dicts }: Props) {
         contextmenu: false,
         cursorBlinking: 'smooth',
         roundedSelection: true,
-        fixedOverflowWidgets: true, // keep also in options
+        fixedOverflowWidgets: true,
       }}
     />
   );
