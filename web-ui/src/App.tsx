@@ -85,6 +85,9 @@ type AppliedChange = {
 type TeamSnapshot = {
   my: (MemberEx | undefined)[];
   enemy: (MemberEx | undefined)[];
+  weather?: WeatherState | null;
+  myScreens?: ScreenState[];
+  enemyScreens?: ScreenState[];
 };
 
 type StatChange = {
@@ -354,12 +357,25 @@ export default function App() {
   const cloneSnapshot = (snapshot?: TeamSnapshot): TeamSnapshot => ({
     my: (snapshot?.my || []).map(cloneMember),
     enemy: (snapshot?.enemy || []).map(cloneMember),
+    weather: snapshot?.weather ? { ...snapshot.weather } : undefined,
+    myScreens: snapshot?.myScreens ? [...snapshot.myScreens] : undefined,
+    enemyScreens: snapshot?.enemyScreens ? [...snapshot.enemyScreens] : undefined,
   });
 
   // Restore teams from a snapshot
-  const restoreFromSnapshot = (snapshot: TeamSnapshot) => {
+  const restoreFromSnapshot = (snapshot: TeamSnapshot, turnIndex?: number) => {
     setMyTeam(snapshot.my.map(cloneMember));
     setEnemyTeam(snapshot.enemy.map(cloneMember));
+    
+    // Restore weather and screens to the turn
+    if (typeof turnIndex === 'number') {
+      setTurns(prev => prev.map((x, idx) => idx === turnIndex ? {
+        ...x,
+        weather: snapshot.weather,
+        myScreens: snapshot.myScreens,
+        enemyScreens: snapshot.enemyScreens,
+      } : x));
+    }
   };
 
   // Get the start snapshot for a turn (from previous turn's end or initial state)
@@ -399,7 +415,7 @@ export default function App() {
 
     // Restore to this turn's start snapshot
     if (t.startSnapshot) {
-      restoreFromSnapshot(t.startSnapshot);
+      restoreFromSnapshot(t.startSnapshot, i);
     }
 
     // Clear run state and end snapshot for this turn
@@ -443,6 +459,9 @@ export default function App() {
       startSnap = {
         my: myTeam.map(cloneMember),
         enemy: enemyTeam.map(cloneMember),
+        weather: t.weather,
+        myScreens: t.myScreens,
+        enemyScreens: t.enemyScreens,
       };
       // Store the snapshot
       setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, startSnapshot: startSnap } : x));
@@ -454,7 +473,7 @@ export default function App() {
     }
 
     // STEP 2: Restore teams to the start snapshot (this is KEY - resets state every Calc)
-    restoreFromSnapshot(startSnap);
+    restoreFromSnapshot(startSnap, i);
     
     // Wait for state to update
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -618,6 +637,9 @@ export default function App() {
           startSnapshot: x.startSnapshot ?? {
             my: myTeam.map(cloneMember),
             enemy: enemyTeam.map(cloneMember),
+            weather: currentWeather,
+            myScreens,
+            enemyScreens,
           },
           endSnapshot: undefined,
           appliedChanges: [],
@@ -742,6 +764,9 @@ export default function App() {
           startSnapshot: x.startSnapshot ?? {
             my: myTeam.map(cloneMember),
             enemy: enemyTeam.map(cloneMember),
+            weather: currentWeather,
+            myScreens,
+            enemyScreens,
           },
           endSnapshot: undefined,
           appliedChanges: [],
@@ -789,6 +814,9 @@ export default function App() {
           startSnapshot: x.startSnapshot ?? {
             my: myTeam.map(cloneMember),
             enemy: enemyTeam.map(cloneMember),
+            weather: currentWeather,
+            myScreens,
+            enemyScreens,
           },
           endSnapshot: undefined,
           appliedChanges: [],
@@ -872,6 +900,9 @@ export default function App() {
         startSnapshot: x.startSnapshot ?? {
           my: myTeam.map(cloneMember),
           enemy: enemyTeam.map(cloneMember),
+          weather: currentWeather,
+          myScreens,
+          enemyScreens,
         },
         endSnapshot: undefined,
         appliedChanges: [],
@@ -966,6 +997,9 @@ export default function App() {
             endSnapshot: {
               my: myTeam.map(cloneMember),
               enemy: enemyTeam.map(cloneMember),
+              weather: t.weather,
+              myScreens: t.myScreens,
+              enemyScreens: t.enemyScreens,
             }
           };
         }));
@@ -1057,6 +1091,9 @@ export default function App() {
             endSnapshot: {
               my: myTeam.map(cloneMember),
               enemy: enemyTeam.map(cloneMember),
+              weather: t.weather,
+              myScreens: t.myScreens,
+              enemyScreens: t.enemyScreens,
             }
           };
         }));
@@ -1247,6 +1284,9 @@ export default function App() {
           endSnapshot: {
             my: myTeam.map(cloneMember),
             enemy: enemyTeam.map(cloneMember),
+            weather: x.weather,
+            myScreens: x.myScreens,
+            enemyScreens: x.enemyScreens,
           }
         };
       }));
@@ -1274,7 +1314,7 @@ export default function App() {
 
     // If this turn was applied, restore to its start snapshot first
     if (t.runApplied && t.startSnapshot) {
-      restoreFromSnapshot(t.startSnapshot);
+      restoreFromSnapshot(t.startSnapshot, i);
     }
 
     // Remove the turn
