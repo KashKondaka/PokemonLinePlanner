@@ -7,7 +7,8 @@
     "start": "ts-node src/cli.ts",
     "build": "tsc",
     "run": "node dist/cli.js",
-    "server": "ts-node src/server.ts"
+    "server": "ts-node src/server.ts",
+    "dev": "bash start.sh"
   },
   "keywords": [],
   "author": "",

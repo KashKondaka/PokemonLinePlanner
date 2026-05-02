@@ -1599,6 +1599,25 @@ export default function App() {
           </div>
         </section>
 
+        {/* Collection */}
+        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4 mb-6">
+          <div className="text-xs text-neutral-400 mb-2">Your collection</div>
+          <div className="text-sm leading-7">
+            {myCollection.map((name, idx) => (
+              <span key={name}>
+                <span
+                  draggable
+                  onDragStart={e => e.dataTransfer.setData('text/plain', name)}
+                  className="cursor-grab active:cursor-grabbing underline decoration-neutral-600 decoration-dotted"
+                >
+                  {name}
+                </span>
+                {idx < myCollection.length - 1 ? <span className="text-neutral-500">, </span> : null}
+              </span>
+            ))}
+          </div>
+        </div>
+
         {/* Teams */}
         <section className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
           <TeamBox
@@ -1618,25 +1637,6 @@ export default function App() {
             members={enemyTeam}
           />
         </section>
-
-        {/* Collection */}
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4 mb-6">
-          <div className="text-xs text-neutral-400 mb-2">Your collection</div>
-          <div className="text-sm leading-7">
-            {myCollection.map((name, idx) => (
-              <span key={name}>
-                <span
-                  draggable
-                  onDragStart={e => e.dataTransfer.setData('text/plain', name)}
-                  className="cursor-grab active:cursor-grabbing underline decoration-neutral-600 decoration-dotted"
-                >
-                  {name}
-                </span>
-                {idx < myCollection.length - 1 ? <span className="text-neutral-500">, </span> : null}
-              </span>
-            ))}
-          </div>
-        </div>
 
         {/* Planner */}
         <section className="rounded-2xl border border-neutral-800 p-4 bg-neutral-900/40">
