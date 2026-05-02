@@ -161,4 +161,79 @@ function parseEnemyTrainer(text: string) {
       enemyAbilityBySpecies: en.abilityBySpecies,
     };
   }
-  
+
+  export type EnrichedPokemon = {
+    species: string;
+    level: number;
+    nature?: string;
+    ability?: string;
+    item?: string;
+    moves: string[];
+    moveDetails: { name: string; bp: number; type: string; category: string }[];
+    ivs: Record<string, number>;
+    evs: Record<string, number>;
+    baseStats: Record<string, number>;
+    computedStats: Record<string, number>;
+    types: string[];
+  };
+
+  const IV_LABEL: Record<string, string> = {
+    hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe',
+  };
+
+  export function serializeToShowdown(p: EnrichedPokemon): string {
+    const lines: string[] = [];
+
+    let header = p.species;
+    if (p.item) header += ` @ ${p.item}`;
+    lines.push(header);
+
+    if (p.ability) lines.push(`Ability: ${p.ability}`);
+    lines.push(`Level: ${p.level}`);
+    if (p.nature) lines.push(`${p.nature} Nature`);
+
+    const ivParts: string[] = [];
+    for (const [key, label] of Object.entries(IV_LABEL)) {
+      const val = p.ivs[key] ?? 31;
+      if (val !== 31) ivParts.push(`${val} ${label}`);
+    }
+    if (ivParts.length) lines.push(`IVs: ${ivParts.join(' / ')}`);
+
+    const evParts: string[] = [];
+    for (const [key, label] of Object.entries(IV_LABEL)) {
+      const val = p.evs[key] ?? 0;
+      if (val !== 0) evParts.push(`${val} ${label}`);
+    }
+    if (evParts.length) lines.push(`EVs: ${evParts.join(' / ')}`);
+
+    for (const move of p.moves) {
+      lines.push(`- ${move}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  export function replaceBlockInMyText(
+    myText: string,
+    originalIndex: number,
+    newBlock: string,
+  ): string {
+    const blocks = myText.replace(/\r\n/g, '\n').split(/\n{2,}/).filter(b => b.trim());
+    if (originalIndex < 0 || originalIndex >= blocks.length) return myText;
+    blocks[originalIndex] = newBlock;
+    return blocks.join('\n\n') + '\n';
+  }
+
+  export function appendBlockToMyText(myText: string, newBlock: string): string {
+    const trimmed = myText.trimEnd();
+    if (!trimmed) return newBlock + '\n';
+    return trimmed + '\n\n' + newBlock + '\n';
+  }
+
+  export function deleteBlockFromMyText(myText: string, index: number): string {
+    const blocks = myText.replace(/\r\n/g, '\n').split(/\n{2,}/).filter(b => b.trim());
+    if (index < 0 || index >= blocks.length) return myText;
+    blocks.splice(index, 1);
+    if (blocks.length === 0) return '';
+    return blocks.join('\n\n') + '\n';
+  }

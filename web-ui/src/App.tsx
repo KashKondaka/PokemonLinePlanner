@@ -10,6 +10,7 @@ import UndoButton from './components/UndoButton';
 import RollSlider from './components/RollSlider';
 import FilePicker from './components/FilePicker';
 import PokemonIcon from './components/PokemonIcon';
+import TeamEditor from './components/TeamEditor';
 
 import { buildDictionaries, type Dictionaries } from './logic/parsers';
 import { parseActionFromLine } from './logic/grammar';
@@ -166,6 +167,9 @@ type CalcResponse = {
 /* ===================== App ===================== */
 
 export default function App() {
+  // Tab navigation
+  const [activeTab, setActiveTab] = useState<'editor' | 'planner'>('planner');
+
   // Uploads + gen
   const [myText, setMyText] = useState('');
   const [enemyText, setEnemyText] = useState('');
@@ -1126,12 +1130,36 @@ export default function App() {
   return (
     <div className="min-h-screen w-full flex flex-col items-center bg-neutral-950 text-neutral-100 p-6" style={{fontFamily:'Inter, ui-sans-serif, system-ui'}}>
       <div className="w-full max-w-6xl">
-        <header className="mb-6">
+        <header className="mb-4">
           <h1 className="text-3xl font-bold tracking-tight">Poke Fight Planner</h1>
           <p className="text-neutral-400">Upload sets, pick generation, build teams, plan turns, and apply rolls (with status & items).</p>
         </header>
 
-        {/* Uploads + Generation */}
+        {/* Tab Bar */}
+        <div className="flex gap-1 bg-neutral-900 rounded-xl p-1 mb-6 w-fit">
+          <button
+            onClick={() => setActiveTab('editor')}
+            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              activeTab === 'editor'
+                ? 'bg-neutral-700 text-white'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+            }`}
+          >
+            Team Editor
+          </button>
+          <button
+            onClick={() => setActiveTab('planner')}
+            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors ${
+              activeTab === 'planner'
+                ? 'bg-neutral-700 text-white'
+                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+            }`}
+          >
+            Planner
+          </button>
+        </div>
+
+        {/* Uploads + Generation (shared between tabs) */}
         <section className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="rounded-2xl border border-neutral-800 p-4 bg-neutral-900/40 md:col-span-2">
             <h2 className="text-sm font-semibold mb-3">Upload sets</h2>
@@ -1186,6 +1214,14 @@ export default function App() {
           </div>
         </section>
 
+        {/* Team Editor Tab */}
+        {activeTab === 'editor' && (
+          <TeamEditor myText={myText} gen={gen} onMyTextChange={setMyText} />
+        )}
+
+        {/* Planner Tab */}
+        {activeTab === 'planner' && (
+          <>
         {/* Collection */}
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4 mb-6">
           <div className="text-xs text-neutral-400 mb-2">Your collection</div>
@@ -1437,6 +1473,8 @@ export default function App() {
             })}
           </div>
         </section>
+          </>
+        )}
 
         <footer className="text-xs text-neutral-500 mt-6">
           <p>Berries (including pinch berries) auto-consume when thresholds are reached; Undo restores the pre-run state for that turn. Use ▶ to apply the selected roll, ↩ to undo, and the small “–” to delete a turn.</p>

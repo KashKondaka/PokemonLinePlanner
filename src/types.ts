@@ -52,3 +52,28 @@ export interface DamageSummary {
   critRollsHP: number[];
   desc: string;
 }
+
+export type StatKey = 'hp' | 'atk' | 'def' | 'spa' | 'spd' | 'spe';
+export type StatBlock = Record<StatKey, number>;
+
+export interface MoveInfo {
+  name: string;
+  bp: number;
+  type: string;
+  category: string;
+}
+
+export interface EnrichedPokemon {
+  species: string;
+  level: number;
+  nature?: string;
+  ability?: string;
+  item?: string;
+  moves: string[];
+  moveDetails: MoveInfo[];
+  ivs: StatBlock;
+  evs: StatBlock;
+  baseStats: StatBlock;
+  computedStats: StatBlock;
+  types: string[];
+}

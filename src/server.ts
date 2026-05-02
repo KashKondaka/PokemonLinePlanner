@@ -1,10 +1,12 @@
 // src/server.ts
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 import { damageSummary } from './damage';
 import { parseShowdownTeamsFile, parseEnemyCompactLines } from './parser';
-import { SimpleSet } from './types';
-import { Generations, Pokemon, Move, Field, GenerationNum, calculate } from '@smogon/calc';
+import { SimpleSet, EnrichedPokemon, MoveInfo, StatBlock } from './types';
+import { Generations, Pokemon, Move, Field, GenerationNum, calculate, ITEMS } from '@smogon/calc';
 
 // Stat-changing moves database
 type StatChange = {
@@ -399,6 +401,170 @@ app.post('/api/calc', (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'calc failed' });
   }
+});
+
+app.post('/api/team-details', (req, res) => {
+  try {
+    const { myText = '', gen = 9 } = req.body || {};
+    if (!myText) return res.json([]);
+
+    const genNum = Number(gen) as GenerationNum;
+    const g = Generations.get(genNum);
+    const sets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+
+    const enriched: EnrichedPokemon[] = sets.map((set) => {
+      const pokemon = toCalcPokemon(g, set);
+
+      const bs = pokemon.species.baseStats;
+      const baseStats: StatBlock = {
+        hp: bs.hp, atk: bs.atk, def: bs.def,
+        spa: bs.spa, spd: bs.spd, spe: bs.spe,
+      };
+
+      const rs = pokemon.rawStats;
+      const computedStats: StatBlock = {
+        hp: rs.hp, atk: rs.atk, def: rs.def,
+        spa: rs.spa, spd: rs.spd, spe: rs.spe,
+      };
+
+      const types: string[] = pokemon.types.map(String);
+
+      const moveDetails: MoveInfo[] = set.moves.map((moveName) => {
+        try {
+          const mv = new Move(g, moveName);
+          return { name: mv.name, bp: mv.bp, type: mv.type, category: mv.category };
+        } catch {
+          return { name: moveName, bp: 0, type: 'Normal', category: 'Physical' };
+        }
+      });
+
+      const ivs: StatBlock = {
+        hp: set.ivs?.hp ?? 31, atk: set.ivs?.atk ?? 31, def: set.ivs?.def ?? 31,
+        spa: set.ivs?.spa ?? 31, spd: set.ivs?.spd ?? 31, spe: set.ivs?.spe ?? 31,
+      };
+      const evs: StatBlock = {
+        hp: set.evs?.hp ?? 0, atk: set.evs?.atk ?? 0, def: set.evs?.def ?? 0,
+        spa: set.evs?.spa ?? 0, spd: set.evs?.spd ?? 0, spe: set.evs?.spe ?? 0,
+      };
+
+      return {
+        species: set.species,
+        level: set.level,
+        nature: set.nature,
+        ability: set.ability,
+        item: set.item,
+        moves: set.moves,
+        moveDetails,
+        ivs,
+        evs,
+        baseStats,
+        computedStats,
+        types,
+      };
+    });
+
+    res.json(enriched);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'team-details failed' });
+  }
+});
+
+// --- Learnset data ---
+
+type LearnsetEntry = {
+  moves: string[];
+  abilities: string[];
+};
+
+function normalizeLearnsetKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parseLearnsetFile(): Record<string, LearnsetEntry> {
+  const filePath = path.resolve(__dirname, '..', 'Learnset, Evolution Methods and Abilities.txt');
+  if (!fs.existsSync(filePath)) return {};
+  const text = fs.readFileSync(filePath, 'utf-8');
+  const result: Record<string, LearnsetEntry> = {};
+  const blocks = text.replace(/\r\n/g, '\n').split(/\n{2,}/);
+
+  for (const block of blocks) {
+    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+
+    const speciesName = lines[0];
+    const moves: string[] = [];
+    const abilities: string[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      const moveMatch = line.match(/^Lv\.\s*\d+\s+(.+)$/);
+      if (moveMatch) {
+        const moveName = moveMatch[1].trim();
+        if (!moves.includes(moveName)) moves.push(moveName);
+        continue;
+      }
+      const abilityMatch = line.match(/^(?:Ability \d|Hidden Ability):\s*(.+)$/i);
+      if (abilityMatch) {
+        const ab = abilityMatch[1].trim();
+        if (ab && ab !== 'None' && !abilities.includes(ab)) abilities.push(ab);
+      }
+    }
+
+    result[normalizeLearnsetKey(speciesName)] = { moves, abilities };
+  }
+
+  return result;
+}
+
+let learnsetCache: Record<string, LearnsetEntry> | null = null;
+
+function getLearnsetData(): Record<string, LearnsetEntry> {
+  if (!learnsetCache) learnsetCache = parseLearnsetFile();
+  return learnsetCache;
+}
+
+function showdownToLearnsetKey(species: string): string {
+  return species
+    .replace(/-Galar$/i, 'galarian')
+    .replace(/-Alola$/i, 'alolan')
+    .replace(/-Hisui$/i, 'hisuian')
+    .replace(/-Paldea$/i, 'paldean')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
+}
+
+app.get('/api/learnset/:species', (req, res) => {
+  const species = req.params.species;
+  const gen = Number(req.query.gen ?? 9) as GenerationNum;
+  const data = getLearnsetData();
+  const lkey = showdownToLearnsetKey(species);
+
+  let entry: LearnsetEntry | undefined = data[lkey];
+  if (!entry) {
+    for (const [k, v] of Object.entries(data)) {
+      if (k.startsWith(lkey) || lkey.startsWith(k)) { entry = v; break; }
+    }
+  }
+
+  const moves = entry?.moves ?? [];
+  const abilities = entry?.abilities ?? [];
+
+  const g = Generations.get(gen);
+  const moveDetails: Record<string, { bp: number; type: string; category: string }> = {};
+  for (const moveName of moves) {
+    try {
+      const mv = new Move(g, moveName);
+      moveDetails[moveName] = { bp: mv.bp, type: mv.type, category: mv.category };
+    } catch { /* skip unknown moves */ }
+  }
+
+  res.json({ moves, abilities, moveDetails });
+});
+
+app.get('/api/items', (req, res) => {
+  const gen = Number(req.query.gen ?? 9) as GenerationNum;
+  const items: string[] = (ITEMS as any)[gen] ?? [];
+  res.json(items);
 });
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
