@@ -51,45 +51,20 @@ import {
   SCREEN_DURATION,
   doesScreenAffectAttack,
 } from './logic/screens';
-
-/* ===================== Local types ===================== */
-
-type BerryState = { name: string; consumed: boolean };
-
-type StatStages = {
-  atk: number;
-  def: number;
-  spatk: number;
-  spdef: number;
-  spd: number;
-};
-
-type MemberEx = TeamMember & {
-  berry?: BerryState;
-  status?: StatusState;
-  statStages?: StatStages;
-};
-
-type AppliedChange = {
-  team: 'my' | 'enemy';
-  index: number;
-  name: string;
-  prevPct: number;
-  prevCurHP?: number;
-  prevMaxHP?: number;
-  prevBerry?: BerryState | undefined;
-  prevStatus?: StatusState | undefined;
-  prevItem?: string | undefined;
-  prevStatStages?: StatStages | undefined;
-};
-
-type TeamSnapshot = {
-  my: (MemberEx | undefined)[];
-  enemy: (MemberEx | undefined)[];
-  weather?: WeatherState | null;
-  myScreens?: ScreenState[];
-  enemyScreens?: ScreenState[];
-};
+import {
+  type MemberEx,
+  type BerryState,
+  type GameState,
+  type GameAction,
+  type DamageAction,
+  type StatChangeAction,
+  type StatusMoveAction,
+  type IntimidateEffect,
+  cloneMember,
+  cloneState,
+  computeDamageEffects,
+  replayAll,
+} from './logic/gameState';
 
 type StatChange = {
   stat: 'atk' | 'def' | 'spatk' | 'spdef' | 'spd';
@@ -160,9 +135,6 @@ type TurnLine = {
     intimidateUsed?: Array<{ user: string; target: string; effect: 'normal' | 'blocked' | 'defiant' }>;
   };
 
-  // What we mutated on "Run" so we can undo
-  appliedChanges?: AppliedChange[];
-
   // UX
   loading?: boolean;
   error?: string | null;
@@ -175,10 +147,6 @@ type TurnLine = {
 
   // Run-once gate
   runApplied?: boolean;
-
-  // Turn state snapshots (before first Calc for this turn, and after Run)
-  startSnapshot?: TeamSnapshot;
-  endSnapshot?: TeamSnapshot;
 
   // Weather state for this turn
   weather?: WeatherState | null;
@@ -207,9 +175,22 @@ export default function App() {
 
   const dicts = useMemo<Dictionaries>(() => buildDictionaries(myText, enemyText), [myText, enemyText]);
 
-  // Teams – global state (turns apply mutations here)
-  const [myTeam, setMyTeam] = useState<MemberEx[]>(Array(6).fill(undefined) as any);
-  const [enemyTeam, setEnemyTeam] = useState<MemberEx[]>([]);
+  // Base (editable) teams — used before first Run
+  const [baseMyTeam, setMyTeam] = useState<MemberEx[]>(Array(6).fill(undefined) as any);
+  const [baseEnemyTeam, setEnemyTeam] = useState<MemberEx[]>([]);
+
+  // Action-log replay state
+  const [initialState, setInitialState] = useState<GameState | null>(null);
+  const [actionLog, setActionLog] = useState<GameAction[]>([]);
+
+  const derivedState = useMemo<GameState | null>(
+    () => initialState ? replayAll(initialState, actionLog) : null,
+    [initialState, actionLog]
+  );
+
+  // Active teams: derived from action log when running, editable otherwise
+  const myTeam = (derivedState?.myTeam ?? baseMyTeam) as MemberEx[];
+  const enemyTeam = (derivedState?.enemyTeam ?? baseEnemyTeam) as MemberEx[];
 
   // Prefill enemy team when enemytrainer changes
   useEffect(() => {
@@ -253,17 +234,6 @@ export default function App() {
     const i = myTeam.findIndex(m => m?.name?.toLowerCase() === name.toLowerCase());
     if (i !== -1) return { team: 'my', index: i, member: myTeam[i] };
     return { team: null, index: -1, member: undefined };
-  }
-
-  function setMemberByLoc(
-    loc: { team: 'my'|'enemy'; index: number },
-    updater: (cur: MemberEx | undefined) => MemberEx | undefined
-  ) {
-    if (loc.team === 'enemy') {
-      setEnemyTeam(p => { const n=[...p]; n[loc.index]=updater(n[loc.index]); return n; });
-    } else {
-      setMyTeam(p => { const n=[...p]; n[loc.index]=updater(n[loc.index]); return n; });
-    }
   }
 
   async function addToMyTeam(slotIndex: number, species: string) {
@@ -338,106 +308,29 @@ export default function App() {
   };
 
   // Planner
-  const [turns, setTurns] = useState<TurnLine[]>([{ id: 1, text: '', appliedChanges: [] }]);
+  const [turns, setTurns] = useState<TurnLine[]>([{ id: 1, text: '' }]);
   const onEditorChange = (i: number, v: string) =>
     setTurns(p => p.map((t, idx) => (idx === i ? { ...t, text: v } : t)));
   const addTurn = () =>
-    setTurns(p => [...p, { id: p.length + 1, text: '', appliedChanges: [] }]);
+    setTurns(p => [...p, { id: p.length + 1, text: '' }]);
 
-  // Snapshot helpers
-  const cloneMember = (m?: MemberEx) =>
-    m
-      ? {
-          ...m,
-          berry: m.berry ? { ...m.berry } : undefined,
-          status: m.status ? { ...m.status } : undefined,
-          statStages: m.statStages ? { ...m.statStages } : undefined,
-        }
-      : undefined;
-
-  const cloneSnapshot = (snapshot?: TeamSnapshot): TeamSnapshot => ({
-    my: (snapshot?.my || []).map(cloneMember),
-    enemy: (snapshot?.enemy || []).map(cloneMember),
-    weather: snapshot?.weather ? { ...snapshot.weather } : undefined,
-    myScreens: snapshot?.myScreens ? [...snapshot.myScreens] : undefined,
-    enemyScreens: snapshot?.enemyScreens ? [...snapshot.enemyScreens] : undefined,
-  });
-
-  // Restore teams from a snapshot
-  const restoreFromSnapshot = (snapshot: TeamSnapshot, turnIndex?: number) => {
-    setMyTeam(snapshot.my.map(cloneMember));
-    setEnemyTeam(snapshot.enemy.map(cloneMember));
-    
-    // Restore weather and screens to the turn
-    if (typeof turnIndex === 'number') {
-      setTurns(prev => prev.map((x, idx) => idx === turnIndex ? {
-        ...x,
-        weather: snapshot.weather,
-        myScreens: snapshot.myScreens,
-        enemyScreens: snapshot.enemyScreens,
-      } : x));
-    }
-  };
-
-  // Get the start snapshot for a turn (from previous turn's end or initial state)
-  const getStartSnapshotForTurn = (turnIndex: number): TeamSnapshot => {
-    if (turnIndex === 0) {
-      // First turn - use current state or create fresh snapshot
-      const t = turns[0];
-      if (t.startSnapshot) return cloneSnapshot(t.startSnapshot);
-      return {
-        my: myTeam.map(cloneMember),
-        enemy: enemyTeam.map(cloneMember),
-      };
-    }
-    
-    // For subsequent turns, use the previous turn's end snapshot
-    const prevTurn = turns[turnIndex - 1];
-    if (prevTurn?.endSnapshot) {
-      return cloneSnapshot(prevTurn.endSnapshot);
-    }
-    
-    // Fallback to previous turn's start snapshot
-    if (prevTurn?.startSnapshot) {
-      return cloneSnapshot(prevTurn.startSnapshot);
-    }
-    
-    // Last resort - current team state
-    return {
-      my: myTeam.map(cloneMember),
-      enemy: enemyTeam.map(cloneMember),
-    };
-  };
-
-  // Undo (revert the mutations of this specific turn)
+  // Undo: remove this turn's action from the log; state auto-recomputes
   function undoRun(i: number) {
     const t = turns[i];
     if (!t.runApplied) return;
 
-    // Restore to this turn's start snapshot
-    if (t.startSnapshot) {
-      restoreFromSnapshot(t.startSnapshot, i);
+    const newLog = actionLog.filter(a => a.turnIndex !== i);
+    setActionLog(newLog);
+
+    if (newLog.length === 0 && initialState) {
+      setMyTeam(initialState.myTeam.map(cloneMember) as MemberEx[]);
+      setEnemyTeam(initialState.enemyTeam.map(cloneMember) as MemberEx[]);
+      setInitialState(null);
     }
 
-    // Clear run state and end snapshot for this turn
-    // For turn 1, also clear startSnapshot so manual changes can be made and recaptured
-    setTurns(prev => prev.map((x, idx) => idx === i
-      ? { 
-          ...x, 
-          appliedChanges: [], 
-          chosen: undefined, 
-          runApplied: false, 
-          endSnapshot: undefined,
-          startSnapshot: i === 0 ? undefined : x.startSnapshot  // Clear turn 1's snapshot
-        }
-      : x));
-    
-    // Clear the next turn's start snapshot since this turn's end is now invalid
-    if (i + 1 < turns.length) {
-      setTurns(prev => prev.map((x, idx) => idx === i + 1
-        ? { ...x, startSnapshot: undefined }
-        : x));
-    }
+    setTurns(prev => prev.map((x, idx) =>
+      idx === i ? { ...x, runApplied: false, chosen: undefined } : x
+    ));
   }
 
 
@@ -450,39 +343,10 @@ export default function App() {
       return;
     }
 
-    // STEP 1: Get or create the start snapshot for this turn
-    let startSnap = t.startSnapshot;
-    
-    // Special handling for Turn 1: if it hasn't been run yet, always capture current state as baseline
-    // This allows users to manually edit HP, items, and status on their team before the first calc
-    // Each subsequent calc before the first run will recapture any manual changes
-    if (i === 0 && !t.runApplied) {
-      startSnap = {
-        my: myTeam.map(cloneMember),
-        enemy: enemyTeam.map(cloneMember),
-        weather: t.weather,
-        myScreens: t.myScreens,
-        enemyScreens: t.enemyScreens,
-      };
-      // Store the snapshot
-      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, startSnapshot: startSnap } : x));
-    } else if (!startSnap) {
-      // For other turns or after turn 1 is run, use the standard snapshot logic
-      startSnap = getStartSnapshotForTurn(i);
-      // Store the snapshot
-      setTurns(prev => prev.map((x, idx) => idx === i ? { ...x, startSnapshot: startSnap } : x));
-    }
-
-    // STEP 2: Restore teams to the start snapshot (this is KEY - resets state every Calc)
-    restoreFromSnapshot(startSnap, i);
-    
-    // Wait for state to update
-    await new Promise(resolve => setTimeout(resolve, 0));
-
+    // Derived state (from action log) is always the correct current state — no snapshot needed
     const attackerCanon = resolveCanonicalName(base.attacker, dicts) ?? base.attacker;
     const defenderCanon = resolveCanonicalName(base.defender, dicts) ?? base.defender;
 
-    // Get current state from teams (which have been restored to startSnapshot)
     const defenderLoc = findMember(defenderCanon);
     const currentPct = defenderLoc.member?.pct ?? 100;
     const currentStatus = defenderLoc.member?.status;
@@ -635,15 +499,6 @@ export default function App() {
           myScreens,
           enemyScreens,
           runApplied: false,
-          startSnapshot: x.startSnapshot ?? {
-            my: myTeam.map(cloneMember),
-            enemy: enemyTeam.map(cloneMember),
-            weather: currentWeather,
-            myScreens,
-            enemyScreens,
-          },
-          endSnapshot: undefined,
-          appliedChanges: [],
           chosen: undefined,
         }) : x));
         return;
@@ -687,45 +542,7 @@ export default function App() {
       const data: any = await resp.json();
 
       // Apply Intimidate stat changes to the actual Pokemon if they were triggered
-      if (t.attackerFirstTurnOut && attackerAbility?.toLowerCase() === 'intimidate') {
-        const defAbilityLower = defenderAbility?.toLowerCase();
-        if (defAbilityLower !== 'inner focus') {
-          // Apply the stat change (either Intimidate or Defiant)
-          setMemberByLoc(defenderLoc as any, cur => {
-            const existing = cur ?? ({ name: defenderCanon, pct: 100 } as MemberEx);
-            const currentStages = existing.statStages ?? { atk: 0, def: 0, spatk: 0, spdef: 0, spd: 0 };
-            return {
-              ...existing,
-              statStages: {
-                ...currentStages,
-                atk: defAbilityLower === 'defiant'
-                  ? Math.min(6, currentStages.atk + 2)  // Defiant raises Attack by 2
-                  : Math.max(-6, currentStages.atk - 1), // Normal Intimidate lowers by 1
-              },
-            };
-          });
-        }
-      }
-      
-      if (t.defenderFirstTurnOut && defenderAbility?.toLowerCase() === 'intimidate') {
-        const atkAbilityLower = attackerAbility?.toLowerCase();
-        if (atkAbilityLower !== 'inner focus') {
-          // Apply the stat change (either Intimidate or Defiant)
-          setMemberByLoc(attackerLoc as any, cur => {
-            const existing = cur ?? ({ name: attackerCanon, pct: 100 } as MemberEx);
-            const currentStages = existing.statStages ?? { atk: 0, def: 0, spatk: 0, spdef: 0, spd: 0 };
-            return {
-              ...existing,
-              statStages: {
-                ...currentStages,
-                atk: atkAbilityLower === 'defiant'
-                  ? Math.min(6, currentStages.atk + 2)  // Defiant raises Attack by 2
-                  : Math.max(-6, currentStages.atk - 1), // Normal Intimidate lowers by 1
-              },
-            };
-          });
-        }
-      }
+      // Intimidate stat changes are now persisted via the action log on Run, not during Calc
 
       // Build Intimidate effects array for display
       const intimidateEffects: Array<{ user: string; target: string; effect: 'normal' | 'blocked' | 'defiant' }> = [];
@@ -762,15 +579,6 @@ export default function App() {
           myScreens,
           enemyScreens,
           runApplied: false,
-          startSnapshot: x.startSnapshot ?? {
-            my: myTeam.map(cloneMember),
-            enemy: enemyTeam.map(cloneMember),
-            weather: currentWeather,
-            myScreens,
-            enemyScreens,
-          },
-          endSnapshot: undefined,
-          appliedChanges: [],
           chosen: undefined,
         }) : x));
         return;
@@ -812,15 +620,6 @@ export default function App() {
           myScreens,
           enemyScreens,
           runApplied: false,
-          startSnapshot: x.startSnapshot ?? {
-            my: myTeam.map(cloneMember),
-            enemy: enemyTeam.map(cloneMember),
-            weather: currentWeather,
-            myScreens,
-            enemyScreens,
-          },
-          endSnapshot: undefined,
-          appliedChanges: [],
           chosen: undefined,
         }) : x));
         return;
@@ -897,16 +696,6 @@ export default function App() {
         useCrit: false,
         selectedRollIndex: 0,
         runApplied: false,
-        // Keep startSnapshot if already set, otherwise ensure it
-        startSnapshot: x.startSnapshot ?? {
-          my: myTeam.map(cloneMember),
-          enemy: enemyTeam.map(cloneMember),
-          weather: currentWeather,
-          myScreens,
-          enemyScreens,
-        },
-        endSnapshot: undefined,
-        appliedChanges: [],
         chosen: undefined,
       }) : x));
     } catch (err: any) {
@@ -925,26 +714,48 @@ export default function App() {
     const moveName = parsed?.move ?? '';
     const defenderName = parsed?.defender ?? t.result.defender;
 
-    // Track Intimidate usage for export
-    const intimidateUsed: Array<{ user: string; target: string; effect: 'normal' | 'blocked' | 'defiant' }> = [];
     const attackerCanon = resolveCanonicalName(attackerName, dicts) ?? attackerName;
     const defenderCanon = resolveCanonicalName(defenderName, dicts) ?? defenderName;
     const attackerAbility = dicts.myAbilityBySpecies[attackerCanon] || dicts.enemyAbilityBySpecies[attackerCanon];
     const defenderAbility = dicts.myAbilityBySpecies[defenderCanon] || dicts.enemyAbilityBySpecies[defenderCanon];
 
+    // Build Intimidate effects for the action log + export display
+    const intimidateEffects: IntimidateEffect[] = [];
+    const intimidateUsed: Array<{ user: string; target: string; effect: 'normal' | 'blocked' | 'defiant' }> = [];
+
     if (t.attackerFirstTurnOut && attackerAbility?.toLowerCase() === 'intimidate') {
       const defAbilityLower = defenderAbility?.toLowerCase();
-      const effect = defAbilityLower === 'inner focus' ? 'blocked'
-        : defAbilityLower === 'defiant' ? 'defiant'
-        : 'normal';
-      intimidateUsed.push({ user: attackerName, target: defenderName, effect });
+      const defLoc = findMember(defenderCanon);
+      if (defAbilityLower === 'inner focus') {
+        intimidateUsed.push({ user: attackerName, target: defenderName, effect: 'blocked' });
+      } else if (defAbilityLower === 'defiant') {
+        intimidateUsed.push({ user: attackerName, target: defenderName, effect: 'defiant' });
+        if (defLoc.team) intimidateEffects.push({ targetTeam: defLoc.team, targetIndex: defLoc.index, stages: 2 });
+      } else {
+        intimidateUsed.push({ user: attackerName, target: defenderName, effect: 'normal' });
+        if (defLoc.team) intimidateEffects.push({ targetTeam: defLoc.team, targetIndex: defLoc.index, stages: -1 });
+      }
     }
     if (t.defenderFirstTurnOut && defenderAbility?.toLowerCase() === 'intimidate') {
       const atkAbilityLower = attackerAbility?.toLowerCase();
-      const effect = atkAbilityLower === 'inner focus' ? 'blocked'
-        : atkAbilityLower === 'defiant' ? 'defiant'
-        : 'normal';
-      intimidateUsed.push({ user: defenderName, target: attackerName, effect });
+      const atkLoc = findMember(attackerCanon);
+      if (atkAbilityLower === 'inner focus') {
+        intimidateUsed.push({ user: defenderName, target: attackerName, effect: 'blocked' });
+      } else if (atkAbilityLower === 'defiant') {
+        intimidateUsed.push({ user: defenderName, target: attackerName, effect: 'defiant' });
+        if (atkLoc.team) intimidateEffects.push({ targetTeam: atkLoc.team, targetIndex: atkLoc.index, stages: 2 });
+      } else {
+        intimidateUsed.push({ user: defenderName, target: attackerName, effect: 'normal' });
+        if (atkLoc.team) intimidateEffects.push({ targetTeam: atkLoc.team, targetIndex: atkLoc.index, stages: -1 });
+      }
+    }
+
+    // Capture initial state on first Run
+    if (!initialState) {
+      setInitialState({
+        myTeam: baseMyTeam.map(cloneMember),
+        enemyTeam: baseEnemyTeam.map(cloneMember),
+      });
     }
 
     // Handle stat-changing moves
@@ -953,72 +764,35 @@ export default function App() {
       const loc = findMember(targetCanon);
       if (!loc.team) return;
 
-      const prevStatStages = loc.member?.statStages ?? { atk: 0, def: 0, spatk: 0, spdef: 0, spd: 0 };
-      const newStatStages = { ...prevStatStages };
+      const action: StatChangeAction = {
+        type: 'stat-change',
+        turnIndex: i,
+        targetTeam: loc.team,
+        targetIndex: loc.index,
+        statChanges: t.result.statChanges.map(sc => ({ stat: sc.stat, stages: sc.stages })),
+        intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
+      };
+      setActionLog(prev => [...prev, action]);
 
-      // Apply stat changes
-      t.result.statChanges.forEach(change => {
-        newStatStages[change.stat] = Math.max(-6, Math.min(6, newStatStages[change.stat] + change.stages));
-      });
-
-      // Apply the stat change
-      setMemberByLoc(loc as any, cur => {
-        const existing = cur ?? ({ name: targetCanon, pct: 100 } as MemberEx);
-        return {
-          ...existing,
-          statStages: newStatStages,
-        };
-      });
-
-      // Build stat change description for export
       const statChangeDescriptions = t.result.statChanges.map(change => ({
-        stat: change.stat,
-        stages: change.stages,
-        target: targetCanon,
+        stat: change.stat, stages: change.stages, target: targetCanon,
       }));
 
-      // Mark as applied and save end snapshot
-      setTimeout(() => {
-        setTurns(prev => prev.map((x, idx) => {
-          if (idx !== i) return x;
-          return {
-            ...x,
-            runApplied: true,
-            chosen: {
-              attacker: attackerName || '',
-              move: moveName || '',
-              defender: targetCanon,
-              finalPct: loc.member?.pct ?? 100,
-              finalHP: loc.member?.curHP,
-              maxHP: loc.member?.maxHP,
-              isStatChange: true,
-              statChanges: statChangeDescriptions,
-              intimidateUsed: intimidateUsed.length > 0 ? intimidateUsed : undefined,
-            },
-            endSnapshot: {
-              my: myTeam.map(cloneMember),
-              enemy: enemyTeam.map(cloneMember),
-              weather: t.weather,
-              myScreens: t.myScreens,
-              enemyScreens: t.enemyScreens,
-            }
-          };
-        }));
-        
-        // Initialize next turn's start snapshot
-        setTurns(prev => {
-          if (i + 1 >= prev.length) return prev;
-          return prev.map((x, idx) => {
-            if (idx !== i + 1) return x;
-            const currentTurnEnd = prev[i].endSnapshot;
-            if (!currentTurnEnd) return x;
-            return {
-              ...x,
-              startSnapshot: cloneSnapshot(currentTurnEnd),
-            };
-          });
-        });
-      }, 50);
+      setTurns(prev => prev.map((x, idx) => idx === i ? {
+        ...x,
+        runApplied: true,
+        chosen: {
+          attacker: attackerName || '',
+          move: moveName || '',
+          defender: targetCanon,
+          finalPct: loc.member?.pct ?? 100,
+          finalHP: loc.member?.curHP,
+          maxHP: loc.member?.maxHP,
+          isStatChange: true,
+          statChanges: statChangeDescriptions,
+          intimidateUsed: intimidateUsed.length > 0 ? intimidateUsed : undefined,
+        },
+      } : x));
       return;
     }
 
@@ -1028,106 +802,41 @@ export default function App() {
       const loc = findMember(targetCanon);
       if (!loc.team) return;
 
-      const prevStatus = loc.member?.status;
-      const prevBerry = loc.member?.berry;
-      const prevItem = loc.member?.item;
+      const action: StatusMoveAction = {
+        type: 'status-move',
+        turnIndex: i,
+        targetTeam: loc.team,
+        targetIndex: loc.index,
+        statusEffect: t.result.statusEffect as StatusType,
+        berryCured: !!t.result.berryCured,
+        intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
+      };
+      setActionLog(prev => [...prev, action]);
 
-      // Check if berry cures the status
-      const berryCures = t.result.berryCured;
-      
-      if (!berryCures) {
-        // Apply the status
-        const newStatus: StatusState = t.result.statusEffect === 'tox'
-          ? { type: 'tox', toxicStage: 1 }
-          : { type: t.result.statusEffect as StatusType };
-
-        setMemberByLoc(loc as any, cur => {
-          const existing = cur ?? ({ name: targetCanon, pct: 100 } as MemberEx);
-          return {
-            ...existing,
-            status: newStatus,
-          };
-        });
-      } else {
-        // Berry cures the status - consume the berry
-        setMemberByLoc(loc as any, cur => {
-          const existing = cur ?? ({ name: targetCanon, pct: 100 } as MemberEx);
-          return {
-            ...existing,
-            berry: prevBerry ? { ...prevBerry, consumed: true } : undefined,
-          };
-        });
-      }
-
-      // Mark as applied and save end snapshot
-      setTimeout(() => {
-        setTurns(prev => prev.map((x, idx) => {
-          if (idx !== i) return x;
-          return {
-            ...x,
-            runApplied: true,
-            chosen: {
-              attacker: attackerName || '',
-              move: moveName || '',
-              defender: targetCanon,
-              finalPct: loc.member?.pct ?? 100,
-              finalHP: loc.member?.curHP,
-              maxHP: loc.member?.maxHP,
-              isStatusMove: true,
-              statusEffect: t.result.statusEffect,
-              statusCured: berryCures,
-              intimidateUsed: intimidateUsed.length > 0 ? intimidateUsed : undefined,
-            },
-            appliedChanges: [{
-              team: loc.team!,
-              index: loc.index,
-              name: targetCanon,
-              prevPct: loc.member?.pct ?? 100,
-              prevCurHP: loc.member?.curHP,
-              prevMaxHP: loc.member?.maxHP,
-              prevBerry,
-              prevStatus,
-              prevItem,
-            }],
-            endSnapshot: {
-              my: myTeam.map(cloneMember),
-              enemy: enemyTeam.map(cloneMember),
-              weather: t.weather,
-              myScreens: t.myScreens,
-              enemyScreens: t.enemyScreens,
-            }
-          };
-        }));
-        
-        // Initialize next turn's start snapshot
-        setTurns(prev => {
-          if (i + 1 >= prev.length) return prev;
-          return prev.map((x, idx) => {
-            if (idx !== i + 1) return x;
-            const currentTurnEnd = prev[i].endSnapshot;
-            if (!currentTurnEnd) return x;
-            return {
-              ...x,
-              startSnapshot: cloneSnapshot(currentTurnEnd),
-            };
-          });
-        });
-      }, 50);
+      setTurns(prev => prev.map((x, idx) => idx === i ? {
+        ...x,
+        runApplied: true,
+        chosen: {
+          attacker: attackerName || '',
+          move: moveName || '',
+          defender: targetCanon,
+          finalPct: loc.member?.pct ?? 100,
+          finalHP: loc.member?.curHP,
+          maxHP: loc.member?.maxHP,
+          isStatusMove: true,
+          statusEffect: t.result.statusEffect,
+          statusCured: t.result.berryCured,
+          intimidateUsed: intimidateUsed.length > 0 ? intimidateUsed : undefined,
+        },
+      } : x));
       return;
     }
 
+    // Damaging move
     const { defender, defenderMaxHP } = t.result;
     const defCanon = resolveCanonicalName(defender, dicts) ?? defender;
-
     const loc = findMember(defCanon);
     if (!loc.team) return;
-
-    const prevPct    = loc.member?.pct ?? 100;
-    const prevMaxHP  = loc.member?.maxHP;
-    const prevCurHP  = loc.member?.curHP;
-    const prevBerry  = loc.member?.berry;
-    const prevStatus = loc.member?.status;
-    const prevItem   = loc.member?.item;
 
     const options = (t.useCrit ? t.result.rollOptionsCrit : t.result.rollOptionsNormal) ?? [0];
     const selectedIdx = Math.max(0, Math.min((t.selectedRollIndex ?? 0), options.length - 1));
@@ -1135,120 +844,43 @@ export default function App() {
 
     const maxHP = typeof defenderMaxHP === 'number' && defenderMaxHP > 0
       ? defenderMaxHP
-      : (typeof prevMaxHP === 'number' ? prevMaxHP : undefined);
+      : (typeof loc.member?.maxHP === 'number' ? loc.member.maxHP : undefined);
 
     if (typeof maxHP !== 'number') return;
 
-    let curHPNow: number = typeof prevCurHP === 'number'
-      ? prevCurHP
-      : Math.max(0, Math.round((prevPct / 100) * maxHP));
-
-    let postHP = Math.max(0, curHPNow - selectedDamageHP);
-    let postPct = Math.max(0, Math.round((postHP / maxHP) * 100));
-
-    // Check for Sand Spit ability - triggers sandstorm when taking damage
+    // Check for Sand Spit ability
     let sandSpitTriggered = false;
     if (selectedDamageHP > 0) {
-      const defenderAbility = dicts.myAbilityBySpecies[defCanon] || dicts.enemyAbilityBySpecies[defCanon];
-      if (isSandSpitAbility(defenderAbility)) {
+      const defAbility = dicts.myAbilityBySpecies[defCanon] || dicts.enemyAbilityBySpecies[defCanon];
+      if (isSandSpitAbility(defAbility)) {
         sandSpitTriggered = true;
-        // Update weather for this turn and all subsequent turns
         const newWeather: WeatherState = {
           type: 'sandstorm',
           turnsRemaining: getWeatherDuration(runAndBun),
           startedOnTurn: i + 1,
         };
-        setTurns(prev => prev.map((turn, idx) => {
-          if (idx === i) {
-            // Update current turn
-            return { ...turn, weather: newWeather };
-          } else if (idx > i) {
-            // Update subsequent turns if they don't have their own weather-setting ability/move
-            return { ...turn, weather: newWeather };
-          }
-          return turn;
-        }));
+        setTurns(prev => prev.map((turn, idx) => idx >= i ? { ...turn, weather: newWeather } : turn));
       }
     }
 
-    let berry = prevBerry;
-    let heldBerryName: string | undefined =
-      (berry && !berry.consumed) ? berry.name : normalizeBerryName(loc.member?.item);
-    const rule = inferBerryRule(heldBerryName, gen);
-    let berryUsedName: string | undefined;
+    const action: DamageAction = {
+      type: 'damage',
+      turnIndex: i,
+      targetTeam: loc.team,
+      targetIndex: loc.index,
+      damageHP: selectedDamageHP,
+      defenderMaxHP: maxHP,
+      appliesStatus: t.result.appliesStatus ?? undefined,
+      weather: t.weather,
+      gen,
+      intimidateEffects: intimidateEffects.length > 0 ? intimidateEffects : undefined,
+    };
+    setActionLog(prev => [...prev, action]);
 
-    // Berry trigger (Oran, Sitrus, pinch berries)
-    if (rule && postPct <= rule.thresholdPct) {
-      const healHP = rule.kind === 'heal-flat'
-        ? rule.healHP
-        : Math.round((rule.healPct / 100) * maxHP);
-      postHP = Math.min(maxHP, postHP + healHP);
-      postPct = Math.max(0, Math.round((postHP / maxHP) * 100));
+    const effects = computeDamageEffects(loc.member, action);
 
-      if (heldBerryName) {
-        if (berry && berry.name.toLowerCase() === heldBerryName.toLowerCase()) {
-          berry = { ...berry, consumed: true };
-        } else if (prevBerry == null) {
-          berry = { name: heldBerryName, consumed: true };
-        }
-        berryUsedName = heldBerryName;
-      }
-    }
-
-    // End-of-turn residual AFTER berry
-    let newStatus = prevStatus;
-    if (t.result.appliesStatus) newStatus = t.result.appliesStatus;
-
-    let finalPct = postPct;
-    let finalStatus = newStatus;
-    let eotLossPct: number | undefined;
-    let weatherLossPct: number | undefined;
-    
-    // Apply status damage
-    if (newStatus) {
-      const e = applyEndOfTurnResidual(finalPct, maxHP, newStatus);
-      eotLossPct = e.lossPct > 0 ? e.lossPct : undefined;
-      finalPct = e.nextPct;
-      if (newStatus.type === 'tox') {
-        const stage = (newStatus.toxicStage ?? 1) + 1;
-        finalStatus = { type: 'tox', toxicStage: stage };
-      }
-    }
-
-    // Apply weather damage (Hail/Sandstorm)
-    // Note: This is a simplified version - full implementation would check type immunity
-    // (Ice immune to Hail, Rock/Steel/Ground immune to Sandstorm)
-    if (t.weather?.type && (t.weather.type === 'hail' || t.weather.type === 'sandstorm')) {
-      const weatherDamage = getWeatherDamage(t.weather.type);
-      if (weatherDamage > 0) {
-        weatherLossPct = weatherDamage;
-        finalPct = Math.max(0, finalPct - weatherDamage);
-      }
-    }
-
-    const finalHP = Math.max(0, Math.round((finalPct / 100) * maxHP));
-
-    // Commit to the team slot
-    setMemberByLoc(loc as any, cur => {
-      const existing = cur ?? ({ name: defCanon, pct: 100 } as MemberEx);
-      return {
-        ...existing,
-        pct: Math.round(finalPct),
-        maxHP: maxHP ?? existing.maxHP,
-        curHP: finalHP,
-        berry,
-        status: finalStatus,
-      };
-    });
-
-    // Save "chosen" snapshot + applied change (for precise undo)
     setTurns(prev => prev.map((x, idx) => {
       if (idx !== i) return x;
-      const applied = x.appliedChanges ?? [];
-      let eotType: 'burn' | 'poison' | undefined;
-      if (newStatus?.type === 'burn') eotType = 'burn';
-      if (newStatus?.type === 'psn' || newStatus?.type === 'tox') eotType = 'poison';
-
       return {
         ...x,
         runApplied: true,
@@ -1256,80 +888,34 @@ export default function App() {
           attacker: attackerName || '',
           move: moveName || '',
           defender: defenderName || defCanon,
-          finalPct: Math.round(finalPct),
-          finalHP,
-          maxHP,
-          berryUsedName,
-          eotType,
-          eotLossPct,
-          weatherLossPct,
+          finalPct: effects.finalPct,
+          finalHP: effects.finalHP,
+          maxHP: effects.maxHP,
+          berryUsedName: effects.berryUsedName,
+          eotType: effects.eotType,
+          eotLossPct: effects.eotLossPct,
+          weatherLossPct: effects.weatherLossPct,
           sandSpitTriggered,
           intimidateUsed: intimidateUsed.length > 0 ? intimidateUsed : undefined,
         },
-        appliedChanges: [
-          ...applied,
-          {
-            team: loc.team!, index: loc.index, name: defCanon,
-            prevPct, prevCurHP, prevMaxHP, prevBerry, prevStatus, prevItem
-          }
-        ]
       };
     }));
-
-    // Create end snapshot after state updates (this becomes next turn's start snapshot)
-    setTimeout(() => {
-      setTurns(prev => prev.map((x, idx) => {
-        if (idx !== i) return x;
-        return {
-          ...x,
-          endSnapshot: {
-            my: myTeam.map(cloneMember),
-            enemy: enemyTeam.map(cloneMember),
-            weather: x.weather,
-            myScreens: x.myScreens,
-            enemyScreens: x.enemyScreens,
-          }
-        };
-      }));
-      
-      // Initialize next turn's start snapshot from this turn's end
-      setTurns(prev => {
-        if (i + 1 >= prev.length) return prev; // No next turn
-        return prev.map((x, idx) => {
-          if (idx !== i + 1) return x;
-          // Set next turn's start snapshot to current turn's end snapshot
-          const currentTurnEnd = prev[i].endSnapshot;
-          if (!currentTurnEnd) return x;
-          return {
-            ...x,
-            startSnapshot: cloneSnapshot(currentTurnEnd),
-          };
-        });
-      });
-    }, 50);
   }
 
-  // Delete turn (revert if needed, then remove)
+  // Delete turn: remove action from log (renumber subsequent), remove turn
   function deleteTurn(i: number) {
-    const t = turns[i];
+    const newLog = actionLog
+      .filter(a => a.turnIndex !== i)
+      .map(a => a.turnIndex > i ? { ...a, turnIndex: a.turnIndex - 1 } : a);
+    setActionLog(newLog);
 
-    // If this turn was applied, restore to its start snapshot first
-    if (t.runApplied && t.startSnapshot) {
-      restoreFromSnapshot(t.startSnapshot, i);
+    if (newLog.length === 0 && initialState) {
+      setMyTeam(initialState.myTeam.map(cloneMember) as MemberEx[]);
+      setEnemyTeam(initialState.enemyTeam.map(cloneMember) as MemberEx[]);
+      setInitialState(null);
     }
 
-    // Remove the turn
     setTurns(prev => prev.filter((_, idx) => idx !== i));
-    
-    // Recalculate snapshots for subsequent turns
-    setTimeout(() => {
-      setTurns(prev => prev.map((turn, idx) => {
-        if (idx < i) return turn; // Turns before deleted turn are unaffected
-        // Turns after need their start snapshot recalculated
-        const startSnap = getStartSnapshotForTurn(idx);
-        return { ...turn, startSnapshot: startSnap };
-      }));
-    }, 100);
   }
 
   // -------- Export Lines (.txt) --------
@@ -1795,7 +1381,7 @@ export default function App() {
 
                             <UndoButton
                               onClick={() => undoRun(idx)}
-                              disabled={!t.runApplied || !(t.appliedChanges && t.appliedChanges.length)}
+                              disabled={!t.runApplied}
                             />
                           </div>
                         ) : t.result.isStatusMove ? (
@@ -1812,7 +1398,7 @@ export default function App() {
 
                             <UndoButton
                               onClick={() => undoRun(idx)}
-                              disabled={!t.runApplied || !(t.appliedChanges && t.appliedChanges.length)}
+                              disabled={!t.runApplied}
                             />
                           </div>
                         ) : (
@@ -1839,7 +1425,7 @@ export default function App() {
 
                             <UndoButton
                               onClick={() => undoRun(idx)}
-                              disabled={!t.runApplied || !(t.appliedChanges && t.appliedChanges.length)}
+                              disabled={!t.runApplied}
                             />
                           </div>
                         )}
