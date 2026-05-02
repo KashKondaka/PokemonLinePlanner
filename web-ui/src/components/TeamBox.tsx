@@ -1,5 +1,6 @@
 // src/components/TeamBox.tsx
 import React from 'react';
+import PokemonIcon from './PokemonIcon';
 
 export type StatusType = 'burn' | 'psn' | 'tox' | 'par' | 'frz';
 
@@ -196,9 +197,11 @@ export default function TeamBox({
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="font-medium">
-                    {m?.name ?? <span className="text-neutral-500 italic">Empty slot</span>}
-                  </div>
+                  {m?.name ? (
+                    <PokemonIcon name={m.name} size={40} />
+                  ) : (
+                    <span className="text-neutral-500 italic">Empty slot</span>
+                  )}
                   {/* Status indicator - show for all teams */}
                   {m?.status?.type && (
                     <span className={`text-[10px] px-2 py-0.5 rounded font-semibold ${statusPillStyle(m.status.type)}`}>

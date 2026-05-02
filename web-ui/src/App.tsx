@@ -9,6 +9,7 @@ import RunButton from './components/RunButton';
 import UndoButton from './components/UndoButton';
 import RollSlider from './components/RollSlider';
 import FilePicker from './components/FilePicker';
+import PokemonIcon from './components/PokemonIcon';
 
 import { buildDictionaries, type Dictionaries } from './logic/parsers';
 import { parseActionFromLine } from './logic/grammar';
@@ -1602,18 +1603,21 @@ export default function App() {
         {/* Collection */}
         <div className="rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4 mb-6">
           <div className="text-xs text-neutral-400 mb-2">Your collection</div>
-          <div className="text-sm leading-7">
-            {myCollection.map((name, idx) => (
-              <span key={name}>
-                <span
-                  draggable
-                  onDragStart={e => e.dataTransfer.setData('text/plain', name)}
-                  className="cursor-grab active:cursor-grabbing underline decoration-neutral-600 decoration-dotted"
-                >
-                  {name}
-                </span>
-                {idx < myCollection.length - 1 ? <span className="text-neutral-500">, </span> : null}
-              </span>
+          <div className="flex flex-wrap gap-1">
+            {myCollection.map((name) => (
+              <div
+                key={name}
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.setData('text/plain', name);
+                  const img = e.currentTarget.querySelector('img');
+                  if (img) e.dataTransfer.setDragImage(img, 16, 16);
+                }}
+                className="cursor-grab active:cursor-grabbing rounded-lg hover:bg-neutral-800 p-1 transition"
+                title={name}
+              >
+                <PokemonIcon name={name} size={40} />
+              </div>
             ))}
           </div>
         </div>

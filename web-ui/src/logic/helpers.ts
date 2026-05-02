@@ -41,6 +41,18 @@ export function uniqSortedWithZero(arr: number[]) {
   return uniq;
 }
 
+/** Convert a species display name to a Showdown sprite URL. */
+export function getPokemonSpriteUrl(name: string): string {
+  const id = name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['']/g, '')
+    .replace(/[^a-z0-9-]/g, '')
+    .trim();
+  return `https://play.pokemonshowdown.com/sprites/gen5/${id}.png`;
+}
+
 /**
  * Ask the backend for a Pokémon's max HP by doing a harmless self-calc.
  * Returns undefined on failure (UI can fall back to %-only display).
