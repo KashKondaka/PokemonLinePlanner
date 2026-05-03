@@ -46,6 +46,8 @@ export type SubAction = {
   attackerFirstTurnOut?: boolean;
   defenderFirstTurnOut?: boolean;
 
+  switchScores?: { species: string; score: number; isBest: boolean }[];
+
   chosen?: {
     attacker: string;
     move: string;
@@ -86,6 +88,8 @@ type TeamMember = {
   source: 'my' | 'enemy';
 };
 
+type SwitchAnnotation = { score: number; isBest: boolean };
+
 type SubActionRowProps = {
   label: string;
   action: SubAction;
@@ -94,6 +98,10 @@ type SubActionRowProps = {
   defenderInfo?: MemberLookup;
   attackerTeam?: TeamMember[];
   defenderTeam?: TeamMember[];
+  switchTeam?: TeamMember[];
+  switchAnnotations?: Record<string, SwitchAnnotation>;
+  onSetSwitch?: (name: string, source: 'my' | 'enemy') => void;
+  onClearSwitch?: () => void;
   onSetAttacker: (name: string, source: 'my' | 'enemy') => void;
   onClearAttacker: () => void;
   onSetDefender: (name: string, source: 'my' | 'enemy') => void;
@@ -110,7 +118,8 @@ type SubActionRowProps = {
 
 function SubActionRow({
   label, action, moves, attackerInfo, defenderInfo,
-  attackerTeam, defenderTeam,
+  attackerTeam, defenderTeam, switchTeam, switchAnnotations,
+  onSetSwitch, onClearSwitch,
   onSetAttacker, onClearAttacker, onSetDefender, onClearDefender,
   onSelectMove, onToggleSwitch, onCalc, onRun, onUndo,
   onSetCrit, onSetRollIndex, onSetFirstTurnOut,
@@ -153,10 +162,18 @@ function SubActionRow({
               source={action.switchSource}
               pct={100}
               acceptFrom="any"
-              onDrop={(name, src) => onSetAttacker(name, src)}
-              onClear={onClearAttacker}
+              onDrop={(name, src) => (onSetSwitch ?? onSetAttacker)(name, src)}
+              onClear={onClearSwitch ?? onClearAttacker}
               label="Switch"
+              selectableTeam={switchTeam}
+              annotations={switchAnnotations}
             />
+            {action.switchTo && switchAnnotations?.[action.switchTo] && (
+              <span className={`text-[10px] font-semibold ${switchAnnotations[action.switchTo].isBest ? 'text-yellow-400' : 'text-neutral-500'}`}>
+                {switchAnnotations[action.switchTo].score >= 0 ? '+' : ''}{switchAnnotations[action.switchTo].score}
+                {switchAnnotations[action.switchTo].isBest ? ' ★' : ''}
+              </span>
+            )}
           </div>
           <button
             onClick={onToggleSwitch}
@@ -290,6 +307,8 @@ type TurnCardProps = {
   enemyDefenderInfo?: MemberLookup;
   myTeamMembers?: TeamMember[];
   enemyTeamMembers?: TeamMember[];
+  aliveEnemyMembers?: TeamMember[];
+  enemySwitchAnnotations?: Record<string, SwitchAnnotation>;
   onUpdatePlayerAction: (update: Partial<SubAction>) => void;
   onUpdateEnemyAction: (update: Partial<SubAction>) => void;
   onCalcPlayer: () => void;
@@ -309,6 +328,7 @@ export default function TurnCard({
   playerAttackerInfo, playerDefenderInfo,
   enemyAttackerInfo, enemyDefenderInfo,
   myTeamMembers, enemyTeamMembers,
+  aliveEnemyMembers, enemySwitchAnnotations,
   onUpdatePlayerAction, onUpdateEnemyAction,
   onCalcPlayer, onCalcEnemy,
   onRunPlayer, onRunEnemy,
@@ -340,6 +360,8 @@ export default function TurnCard({
         defenderInfo={playerDefenderInfo}
         attackerTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
         defenderTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
+        onSetSwitch={(name, src) => onUpdatePlayerAction({ switchTo: name, switchSource: src })}
+        onClearSwitch={() => onUpdatePlayerAction({ switchTo: undefined, switchSource: undefined })}
         onSetAttacker={(name, src) => {
           const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
           if (turn.playerAction.defenderSource && turn.playerAction.defenderSource === src) {
@@ -382,6 +404,10 @@ export default function TurnCard({
         defenderInfo={enemyDefenderInfo}
         attackerTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
         defenderTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
+        switchTeam={aliveEnemyMembers}
+        switchAnnotations={enemySwitchAnnotations}
+        onSetSwitch={(name, src) => onUpdateEnemyAction({ switchTo: name, switchSource: src })}
+        onClearSwitch={() => onUpdateEnemyAction({ switchTo: undefined, switchSource: undefined })}
         onSetAttacker={(name, src) => {
           const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
           if (turn.enemyAction.defenderSource && turn.enemyAction.defenderSource === src) {

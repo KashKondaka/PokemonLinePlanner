@@ -198,6 +198,14 @@ export default function App() {
     enemyAction: emptySubAction(),
   }]);
 
+  function findActivePlayerPokemon(turnIdx: number): string | null {
+    for (let i = turnIdx; i >= 0; i--) {
+      const pa = turns[i].playerAction;
+      if (pa.attackerName && pa.attackerSource === 'my') return pa.attackerName;
+    }
+    return null;
+  }
+
   function updateSubAction(turnIdx: number, side: 'player' | 'enemy', update: Partial<SubAction>) {
     setTurns(prev => prev.map((t, i) => {
       if (i !== turnIdx) return t;
@@ -209,8 +217,38 @@ export default function App() {
         fetchAiProbs(updated.attackerName, updated.defenderName);
       }
 
+      // Trigger switch-in score fetch when enemy action toggles to switch
+      if (side === 'enemy' && updated.type === 'switch' && t[key].type !== 'switch') {
+        fetchSwitchScores(turnIdx);
+      }
+
       return { ...t, [key]: updated };
     }));
+
+    async function fetchSwitchScores(tidx: number) {
+      const playerPokemon = findActivePlayerPokemon(tidx);
+      if (!playerPokemon) return;
+      const playerCanon = resolveCanonicalName(playerPokemon, dicts) ?? playerPokemon;
+
+      try {
+        const resp = await fetch('/api/switch-scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gen, playerPokemon: playerCanon,
+            myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
+          }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.scores) {
+          setTurns(p => p.map((t, i) => {
+            if (i !== tidx) return t;
+            return { ...t, enemyAction: { ...t.enemyAction, switchScores: data.scores } };
+          }));
+        }
+      } catch { /* non-critical */ }
+    }
 
     async function fetchAiProbs(enemyName: string, playerName: string) {
       try {
@@ -856,6 +894,27 @@ export default function App() {
                   const eAction = turn.enemyAction;
                   const myMembers = myTeam.filter(Boolean).map(m => ({ name: m.name, source: 'my' as const }));
                   const enemyMembers = enemyTeam.filter(Boolean).map(m => ({ name: m.name, source: 'enemy' as const }));
+                  const aliveEnemyMembers = enemyTeam
+                    .filter(m => m && m.pct > 0)
+                    .map(m => ({ name: m.name, source: 'enemy' as const }));
+                  let enemySwitchAnnotations: Record<string, { score: number; isBest: boolean }> | undefined;
+                  if (eAction.switchScores) {
+                    const alive = eAction.switchScores.filter(s => {
+                      const m = enemyTeam.find(e => e?.name === s.species);
+                      return m && m.pct > 0;
+                    });
+                    const anyBestAlive = alive.some(s => s.isBest);
+                    let bestSpecies: string | null = null;
+                    if (!anyBestAlive && alive.length > 0) {
+                      bestSpecies = alive.reduce((best, cur) => cur.score > best.score ? cur : best, alive[0]).species;
+                    }
+                    enemySwitchAnnotations = Object.fromEntries(
+                      alive.map(s => [s.species, {
+                        score: s.score,
+                        isBest: s.isBest || s.species === bestSpecies,
+                      }])
+                    );
+                  }
                   return (
                     <TurnCard
                       key={turn.id}
@@ -869,6 +928,8 @@ export default function App() {
                       enemyDefenderInfo={getMemberInfo(eAction.defenderName, eAction.defenderSource)}
                       myTeamMembers={myMembers}
                       enemyTeamMembers={enemyMembers}
+                      aliveEnemyMembers={aliveEnemyMembers}
+                      enemySwitchAnnotations={enemySwitchAnnotations}
                       onUpdatePlayerAction={u => updateSubAction(idx, 'player', u)}
                       onUpdateEnemyAction={u => updateSubAction(idx, 'enemy', u)}
                       onCalcPlayer={() => doSubCalc(idx, 'player')}

@@ -1019,6 +1019,113 @@ app.post('/api/find-tanks', (req, res) => {
   }
 });
 
+// --- Switch-In AI Score ---
+
+function computeSwitchScore(
+  genNum: number,
+  candidateSet: SimpleSet,
+  playerSet: SimpleSet,
+): number {
+  const g = Generations.get(genNum as GenerationNum);
+  const candidatePoke = toCalcPokemon(g, candidateSet);
+  const playerPoke = toCalcPokemon(g, playerSet);
+
+  const candidateSpeed = candidatePoke.rawStats.spe;
+  const playerSpeed = playerPoke.rawStats.spe;
+  const isFaster = candidateSpeed >= playerSpeed;
+
+  let bestCandidateDmgPct = 0;
+  for (const moveName of candidateSet.moves) {
+    if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
+    try {
+      const sum = damageSummary(genNum, candidateSet, playerSet, moveName);
+      if (sum.maxPct > bestCandidateDmgPct) bestCandidateDmgPct = sum.maxPct;
+    } catch { /* skip */ }
+  }
+
+  let bestPlayerDmgPct = 0;
+  for (const moveName of playerSet.moves) {
+    if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
+    try {
+      const sum = damageSummary(genNum, playerSet, candidateSet, moveName);
+      if (sum.maxPct > bestPlayerDmgPct) bestPlayerDmgPct = sum.maxPct;
+    } catch { /* skip */ }
+  }
+
+  const canOHKO = bestCandidateDmgPct >= 100;
+  const isOHKOd = bestPlayerDmgPct >= 100;
+
+  let score = 0;
+  if (isFaster && canOHKO) {
+    score = 5;
+  } else if (!isFaster && canOHKO && !isOHKOd) {
+    score = 4;
+  } else if (isFaster && bestCandidateDmgPct > bestPlayerDmgPct) {
+    score = 3;
+  } else if (!isFaster && bestCandidateDmgPct > bestPlayerDmgPct) {
+    score = 2;
+  } else if (isFaster) {
+    score = 1;
+  } else if (!isFaster && isOHKOd) {
+    score = -1;
+  }
+
+  // Special cases
+  const speciesLower = candidateSet.species.toLowerCase();
+  if (speciesLower === 'ditto') {
+    score = Math.max(score, 2);
+  }
+  if (speciesLower === 'wynaut' || speciesLower === 'wobbuffet') {
+    if (!(!isFaster && isOHKOd)) {
+      score = Math.max(score, 2);
+    }
+  }
+
+  return score;
+}
+
+app.post('/api/switch-scores', (req, res) => {
+  try {
+    const { myText = '', enemyText = '', playerPokemon, gen = 9 } = req.body || {};
+    if (!playerPokemon) {
+      return res.status(400).json({ error: 'playerPokemon is required' });
+    }
+
+    const genNum = Number(gen) as GenerationNum;
+    const mySets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+    const enemySets = parseEnemyCompactLines(String(enemyText)).map(normalizeNoEVs);
+    const lookup = buildLookup([...mySets, ...enemySets]);
+
+    const playerSet = lookup[key(String(playerPokemon))];
+    if (!playerSet) {
+      return res.status(404).json({ error: `Unknown player pokemon: ${playerPokemon}` });
+    }
+
+    const scores = enemySets.map((enemySet, partyIndex) => {
+      const score = computeSwitchScore(genNum, enemySet, playerSet);
+      return { species: enemySet.species, score, partyIndex };
+    });
+
+    // Determine the best: highest score, ties broken by party order (lower index first)
+    let bestIdx = 0;
+    for (let i = 1; i < scores.length; i++) {
+      if (scores[i].score > scores[bestIdx].score) bestIdx = i;
+    }
+
+    const result = scores.map((s, i) => ({
+      species: s.species,
+      score: s.score,
+      isBest: i === bestIdx,
+    }));
+
+    console.log('[switch-scores]', playerPokemon, '→', result.map(r => `${r.species}(${r.score >= 0 ? '+' : ''}${r.score}${r.isBest ? '★' : ''})`).join(', '));
+    res.json({ scores: result });
+  } catch (e: any) {
+    console.error('[switch-scores] Error:', e);
+    res.status(500).json({ error: e?.message || 'switch-scores failed' });
+  }
+});
+
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 app.listen(PORT, () => {
   console.log(`API listening on http://localhost:${PORT}`);

@@ -7,6 +7,8 @@ type TeamMember = {
   source: 'my' | 'enemy';
 };
 
+type SwitchAnnotation = { score: number; isBest: boolean };
+
 type Props = {
   pokemonName?: string;
   source?: 'my' | 'enemy';
@@ -18,12 +20,13 @@ type Props = {
   onClear?: () => void;
   label?: string;
   selectableTeam?: TeamMember[];
+  annotations?: Record<string, SwitchAnnotation>;
 };
 
 export default function SpriteDropZone({
   pokemonName, source, pct = 100, curHP, maxHP,
   acceptFrom = 'any', onDrop, onClear, label,
-  selectableTeam = [],
+  selectableTeam = [], annotations,
 }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -87,16 +90,24 @@ export default function SpriteDropZone({
             <div className="px-2 py-1 text-[9px] font-semibold text-blue-400 bg-blue-950/40 border-b border-neutral-800 sticky top-0">
               Player
             </div>
-            {playerMembers.map(m => (
-              <button
-                key={`my-${m.name}`}
-                onClick={e => { if (stopPropagation) e.stopPropagation(); handlePick(m); }}
-                className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-neutral-800 transition text-left"
-              >
-                <PokemonIcon name={m.name} size={24} />
-                <span className="text-xs truncate">{m.name}</span>
-              </button>
-            ))}
+            {playerMembers.map(m => {
+              const ann = annotations?.[m.name];
+              return (
+                <button
+                  key={`my-${m.name}`}
+                  onClick={e => { if (stopPropagation) e.stopPropagation(); handlePick(m); }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-neutral-800 transition text-left"
+                >
+                  <PokemonIcon name={m.name} size={24} />
+                  <span className="text-xs truncate">{m.name}</span>
+                  {ann && (
+                    <span className={`ml-auto text-[10px] font-semibold shrink-0 ${ann.isBest ? 'text-yellow-400' : 'text-neutral-500'}`}>
+                      {ann.score >= 0 ? '+' : ''}{ann.score}{ann.isBest ? ' ★' : ''}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </>
         )}
         {playerMembers.length > 0 && enemyMembers.length > 0 && (
@@ -107,16 +118,24 @@ export default function SpriteDropZone({
             <div className="px-2 py-1 text-[9px] font-semibold text-red-400 bg-red-950/40 border-b border-neutral-800 sticky top-0">
               Enemy
             </div>
-            {enemyMembers.map(m => (
-              <button
-                key={`enemy-${m.name}`}
-                onClick={e => { if (stopPropagation) e.stopPropagation(); handlePick(m); }}
-                className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-neutral-800 transition text-left"
-              >
-                <PokemonIcon name={m.name} size={24} />
-                <span className="text-xs truncate">{m.name}</span>
-              </button>
-            ))}
+            {enemyMembers.map(m => {
+              const ann = annotations?.[m.name];
+              return (
+                <button
+                  key={`enemy-${m.name}`}
+                  onClick={e => { if (stopPropagation) e.stopPropagation(); handlePick(m); }}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-neutral-800 transition text-left"
+                >
+                  <PokemonIcon name={m.name} size={24} />
+                  <span className="text-xs truncate">{m.name}</span>
+                  {ann && (
+                    <span className={`ml-auto text-[10px] font-semibold shrink-0 ${ann.isBest ? 'text-yellow-400' : 'text-neutral-500'}`}>
+                      {ann.score >= 0 ? '+' : ''}{ann.score}{ann.isBest ? ' ★' : ''}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </>
         )}
       </div>
