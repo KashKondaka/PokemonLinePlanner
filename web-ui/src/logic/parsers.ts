@@ -237,3 +237,10 @@ function parseEnemyTrainer(text: string) {
     if (blocks.length === 0) return '';
     return blocks.join('\n\n') + '\n';
   }
+
+  export function keepBlocksByIndices(myText: string, indices: Set<number>): string {
+    const blocks = myText.replace(/\r\n/g, '\n').split(/\n{2,}/).filter(b => b.trim());
+    const kept = blocks.filter((_, i) => indices.has(i));
+    if (kept.length === 0) return '';
+    return kept.join('\n\n') + '\n';
+  }

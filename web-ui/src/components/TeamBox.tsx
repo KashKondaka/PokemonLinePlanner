@@ -149,8 +149,14 @@ export default function TeamBox({
   };
   const handleDrop = (index: number, e: React.DragEvent) => {
     if (!editable || !onDropToSlot) return;
-    const species = e.dataTransfer.getData('text/plain');
-    if (species) onDropToSlot(index, species);
+    const raw = e.dataTransfer.getData('text/plain');
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      onDropToSlot(index, data.name ?? raw);
+    } catch {
+      onDropToSlot(index, raw);
+    }
   };
 
   const startEditingHP = (idx: number, curHP: number | undefined, maxHP: number | undefined) => {

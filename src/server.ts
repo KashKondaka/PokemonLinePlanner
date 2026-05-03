@@ -480,47 +480,55 @@ function normalizeLearnsetKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-function parseLearnsetFile(): Record<string, LearnsetEntry> {
-  const filePath = path.resolve(__dirname, '..', 'Learnset, Evolution Methods and Abilities.txt');
-  if (!fs.existsSync(filePath)) return {};
-  const text = fs.readFileSync(filePath, 'utf-8');
-  const result: Record<string, LearnsetEntry> = {};
-  const blocks = text.replace(/\r\n/g, '\n').split(/\n{2,}/);
-
-  for (const block of blocks) {
-    const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
-    if (!lines.length) continue;
-
-    const speciesName = lines[0];
-    const moves: string[] = [];
-    const abilities: string[] = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-      const moveMatch = line.match(/^Lv\.\s*\d+\s+(.+)$/);
-      if (moveMatch) {
-        const moveName = moveMatch[1].trim();
-        if (!moves.includes(moveName)) moves.push(moveName);
-        continue;
-      }
-      const abilityMatch = line.match(/^(?:Ability \d|Hidden Ability):\s*(.+)$/i);
-      if (abilityMatch) {
-        const ab = abilityMatch[1].trim();
-        if (ab && ab !== 'None' && !abilities.includes(ab)) abilities.push(ab);
-      }
-    }
-
-    result[normalizeLearnsetKey(speciesName)] = { moves, abilities };
-  }
-
-  return result;
-}
-
 let learnsetCache: Record<string, LearnsetEntry> | null = null;
+let speciesNamesCache: string[] | null = null;
 
 function getLearnsetData(): Record<string, LearnsetEntry> {
-  if (!learnsetCache) learnsetCache = parseLearnsetFile();
+  if (!learnsetCache) {
+    const filePath = path.resolve(__dirname, '..', 'Learnset, Evolution Methods and Abilities.txt');
+    if (!fs.existsSync(filePath)) {
+      learnsetCache = {};
+      speciesNamesCache = [];
+      return learnsetCache;
+    }
+    const text = fs.readFileSync(filePath, 'utf-8');
+    const result: Record<string, LearnsetEntry> = {};
+    const names: string[] = [];
+    const blocks = text.replace(/\r\n/g, '\n').split(/\n{2,}/);
+
+    for (const block of blocks) {
+      const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
+      if (!lines.length) continue;
+      const speciesName = lines[0];
+      names.push(speciesName);
+      const moves: string[] = [];
+      const abilities: string[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const moveMatch = line.match(/^Lv\.\s*\d+\s+(.+)$/);
+        if (moveMatch) {
+          const moveName = moveMatch[1].trim();
+          if (!moves.includes(moveName)) moves.push(moveName);
+          continue;
+        }
+        const abilityMatch = line.match(/^(?:Ability \d|Hidden Ability):\s*(.+)$/i);
+        if (abilityMatch) {
+          const ab = abilityMatch[1].trim();
+          if (ab && ab !== 'None' && !abilities.includes(ab)) abilities.push(ab);
+        }
+      }
+      result[normalizeLearnsetKey(speciesName)] = { moves, abilities };
+    }
+
+    learnsetCache = result;
+    speciesNamesCache = names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }
   return learnsetCache;
+}
+
+function getSpeciesNames(): string[] {
+  getLearnsetData();
+  return speciesNamesCache || [];
 }
 
 function showdownToLearnsetKey(species: string): string {
@@ -558,13 +566,457 @@ app.get('/api/learnset/:species', (req, res) => {
     } catch { /* skip unknown moves */ }
   }
 
-  res.json({ moves, abilities, moveDetails });
+  let baseStats: Record<string, number> = {};
+  let types: string[] = [];
+  try {
+    const pokemon = new Pokemon(g, species, { level: 50 });
+    const bs = pokemon.species.baseStats;
+    baseStats = { hp: bs.hp, atk: bs.atk, def: bs.def, spa: bs.spa, spd: bs.spd, spe: bs.spe };
+    types = pokemon.types.map(String);
+  } catch { /* species not in calc data */ }
+
+  res.json({ moves, abilities, moveDetails, baseStats, types });
+});
+
+app.get('/api/species', (_req, res) => {
+  try {
+    res.json(getSpeciesNames());
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Failed to load species list' });
+  }
 });
 
 app.get('/api/items', (req, res) => {
   const gen = Number(req.query.gen ?? 9) as GenerationNum;
   const items: string[] = (ITEMS as any)[gen] ?? [];
   res.json(items);
+});
+
+// --- Trainer Battles parser ---
+
+type TrainerPokemon = {
+  species: string;
+  level: number;
+  item?: string;
+  moves: string[];
+  nature?: string;
+  ability?: string;
+};
+
+type TrainerEntry = {
+  id: number;
+  name: string;
+  area: string;
+  tags: string[];
+  pokemon: TrainerPokemon[];
+};
+
+function parseTrainerBattlesFile(): TrainerEntry[] {
+  const filePath = path.resolve(__dirname, '..', 'Trainer Battles.txt');
+  if (!fs.existsSync(filePath)) return [];
+  const text = fs.readFileSync(filePath, 'utf-8');
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+
+  const trainers: TrainerEntry[] = [];
+  let currentArea = '';
+  let currentTrainer: TrainerEntry | null = null;
+  let globalId = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) {
+      if (currentTrainer && currentTrainer.pokemon.length > 0) {
+        trainers.push(currentTrainer);
+        currentTrainer = null;
+      }
+      continue;
+    }
+
+    if (line.startsWith('------')) {
+      if (currentTrainer && currentTrainer.pokemon.length > 0) {
+        trainers.push(currentTrainer);
+        currentTrainer = null;
+      }
+      const nextLine = lines[i + 1]?.trim();
+      if (nextLine && !nextLine.startsWith('------')) {
+        currentArea = nextLine;
+        i++;
+        if (lines[i + 1]?.trim().startsWith('------')) i++;
+      }
+      continue;
+    }
+
+    if (line.startsWith('- ') || line === '~') continue;
+
+    const lvMatch = line.match(/\bLv\.\d+\b/);
+    if (lvMatch) {
+      const poke = parseTrainerPokemonLine(line);
+      if (poke && currentTrainer) {
+        currentTrainer.pokemon.push(poke);
+      }
+    } else {
+      if (currentTrainer && currentTrainer.pokemon.length > 0) {
+        trainers.push(currentTrainer);
+      }
+      const tags: string[] = [];
+      let trainerName = line;
+      const tagMatches = line.matchAll(/\[([^\]]+)\]/g);
+      for (const m of tagMatches) {
+        tags.push(m[1]);
+        trainerName = trainerName.replace(m[0], '');
+      }
+      trainerName = trainerName.trim();
+
+      currentTrainer = {
+        id: globalId++,
+        name: trainerName,
+        area: currentArea,
+        tags,
+        pokemon: [],
+      };
+    }
+  }
+
+  if (currentTrainer && currentTrainer.pokemon.length > 0) {
+    trainers.push(currentTrainer);
+  }
+  return trainers;
+}
+
+function parseTrainerPokemonLine(line: string): TrainerPokemon | null {
+  let work = line.trim();
+
+  let nature: string | undefined;
+  let ability: string | undefined;
+  const bracketMatch = work.match(/\[([^\]]+)\]\s*$/);
+  if (bracketMatch) {
+    const parts = bracketMatch[1].split('|').map(s => s.trim());
+    nature = parts[0] || undefined;
+    ability = parts[1] || undefined;
+    work = work.slice(0, bracketMatch.index).trim();
+  }
+
+  const lvMatch = work.match(/\bLv\.(\d+)\b/);
+  if (!lvMatch) return null;
+  const level = parseInt(lvMatch[1], 10);
+
+  const species = work.slice(0, work.indexOf('Lv.')).trim();
+  if (!species) return null;
+
+  const afterLv = work.slice(work.indexOf('Lv.') + lvMatch[0].length).trim();
+
+  let item: string | undefined;
+  let moves: string[] = [];
+
+  const atIdx = afterLv.indexOf('@');
+  if (atIdx !== -1) {
+    const afterAt = afterLv.slice(atIdx + 1).trim();
+    const colonIdx = afterAt.indexOf(':');
+    if (colonIdx !== -1) {
+      item = afterAt.slice(0, colonIdx).trim();
+      moves = afterAt.slice(colonIdx + 1).split(',').map(s => s.trim()).filter(Boolean);
+    } else {
+      item = afterAt.trim();
+    }
+  } else {
+    const parts = afterLv.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length > 0) moves = parts;
+  }
+
+  return { species, level, item, moves, nature, ability };
+}
+
+let trainerCache: TrainerEntry[] | null = null;
+
+function getTrainerData(): TrainerEntry[] {
+  if (!trainerCache) trainerCache = parseTrainerBattlesFile();
+  return trainerCache;
+}
+
+app.get('/api/trainers', (_req, res) => {
+  try {
+    const trainers = getTrainerData();
+    res.json(trainers);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Failed to parse trainer battles' });
+  }
+});
+
+app.get('/api/trainers/:id/enemy-text', (req, res) => {
+  try {
+    const trainers = getTrainerData();
+    const id = parseInt(req.params.id, 10);
+    const trainer = trainers.find(t => t.id === id);
+    if (!trainer) return res.status(404).json({ error: 'Trainer not found' });
+
+    const lines = trainer.pokemon.map(p => {
+      let line = `${p.species} Lv.${p.level}`;
+      if (p.item) {
+        line += ` @ ${p.item}`;
+      }
+      if (p.moves.length > 0) {
+        line += `: ${p.moves.join(', ')}`;
+      }
+      if (p.nature || p.ability) {
+        line += ` [${p.nature || ''}|${p.ability || ''}]`;
+      }
+      return line;
+    });
+    res.json({ text: lines.join('\n'), trainer });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Failed to get trainer' });
+  }
+});
+
+// --- AI Move Distribution (using syl-rnb-calc) ---
+
+const sylCalcDistPath = path.resolve(__dirname, '..', 'vendor', 'syl-rnb-calc');
+let sylCalcModule: any = null;
+let generateMoveDistFn: any = null;
+
+try {
+  sylCalcModule = require(sylCalcDistPath);
+  generateMoveDistFn = require(path.join(sylCalcDistPath, 'ai')).generateMoveDist;
+} catch (e: any) {
+  console.warn('[ai-move-dist] Could not load syl-rnb-calc:', e.message);
+}
+
+app.post('/api/ai-move-dist', (req, res) => {
+  if (!sylCalcModule || !generateMoveDistFn) {
+    return res.status(503).json({ error: 'AI module not available. Ensure vendor/syl-rnb-calc/ contains the compiled dist files.' });
+  }
+
+  try {
+    const {
+      gen = 9,
+      myPokemon, enemyPokemon,
+      myMoves, enemyMoves,
+      myText = '', enemyText = '',
+      aiOptions = {},
+    } = req.body || {};
+
+    if (!myPokemon || !enemyPokemon || !enemyMoves || !myMoves) {
+      return res.status(400).json({ error: 'myPokemon, enemyPokemon, myMoves, enemyMoves required' });
+    }
+
+    const genNum = Number(gen);
+    const SylCalc = sylCalcModule;
+
+    const mySets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+    const enemySets = parseEnemyCompactLines(String(enemyText)).map(normalizeNoEVs);
+    const lookup = buildLookup([...mySets, ...enemySets]);
+
+    const mySet = lookup[key(String(myPokemon))];
+    const enemySet = lookup[key(String(enemyPokemon))];
+
+    if (!mySet) return res.status(404).json({ error: `Unknown my pokemon: ${myPokemon}` });
+    if (!enemySet) return res.status(404).json({ error: `Unknown enemy pokemon: ${enemyPokemon}` });
+
+    function toSylPokemon(set: SimpleSet, curHP?: number) {
+      const norm = (s?: string) => (s && s.trim().length ? s : undefined);
+      const sIV = (set.ivs ?? {}) as any;
+      const sEV = (set.evs ?? {}) as any;
+      const opts: any = {
+        level: set.level ?? 50,
+        nature: norm(set.nature),
+        ability: norm(set.ability),
+        item: norm(set.item),
+        status: set.status as any,
+        ivs: {
+          hp: sIV.hp ?? sIV.HP ?? 31, atk: sIV.atk ?? sIV.Atk ?? 31,
+          def: sIV.def ?? sIV.Def ?? 31, spa: sIV.spa ?? sIV.SpA ?? 31,
+          spd: sIV.spd ?? sIV.SpD ?? 31, spe: sIV.spe ?? sIV.Spe ?? 31,
+        },
+        evs: {
+          hp: sEV.hp ?? sEV.HP ?? 0, atk: sEV.atk ?? sEV.Atk ?? 0,
+          def: sEV.def ?? sEV.Def ?? 0, spa: sEV.spa ?? sEV.SpA ?? 0,
+          spd: sEV.spd ?? sEV.SpD ?? 0, spe: sEV.spe ?? sEV.Spe ?? 0,
+        },
+        moves: set.moves,
+      };
+      if (typeof curHP === 'number') opts.curHP = curHP;
+      return new SylCalc.Pokemon(genNum, set.species, opts);
+    }
+
+    const playerPoke = toSylPokemon(mySet);
+    const enemyPoke = toSylPokemon(enemySet);
+    const field = new SylCalc.Field({});
+
+    const playerResults: any[] = [];
+    for (const moveName of (myMoves as string[]).slice(0, 4)) {
+      try {
+        const mv = new SylCalc.Move(genNum, moveName);
+        playerResults.push(SylCalc.calculate(genNum, playerPoke, enemyPoke, mv, field));
+      } catch {
+        playerResults.push(SylCalc.calculate(genNum, playerPoke, enemyPoke, new SylCalc.Move(genNum, 'Tackle'), field));
+      }
+    }
+    while (playerResults.length < 4) {
+      playerResults.push(SylCalc.calculate(genNum, playerPoke, enemyPoke, new SylCalc.Move(genNum, 'Tackle'), field));
+    }
+
+    const enemyResults: any[] = [];
+    for (const moveName of (enemyMoves as string[]).slice(0, 4)) {
+      try {
+        const mv = new SylCalc.Move(genNum, moveName);
+        enemyResults.push(SylCalc.calculate(genNum, enemyPoke, playerPoke, mv, field));
+      } catch {
+        enemyResults.push(SylCalc.calculate(genNum, enemyPoke, playerPoke, new SylCalc.Move(genNum, 'Tackle'), field));
+      }
+    }
+    while (enemyResults.length < 4) {
+      enemyResults.push(SylCalc.calculate(genNum, enemyPoke, playerPoke, new SylCalc.Move(genNum, 'Tackle'), field));
+    }
+
+    const playerSpeed = playerPoke.stats.spe ?? playerPoke.rawStats?.spe ?? 0;
+    const enemySpeed = enemyPoke.stats.spe ?? enemyPoke.rawStats?.spe ?? 0;
+    const fastestSide = playerSpeed >= enemySpeed ? '0' : '1';
+
+    const defaultAiOptions: Record<string, boolean> = {
+      firstTurnOutAiOpt: true,
+      protectIncentiveAiOpt: true,
+      tauntAiOpt: false,
+      ...aiOptions,
+    };
+
+    const damageResults = [playerResults, enemyResults];
+    const moveProbs = generateMoveDistFn(damageResults, fastestSide, defaultAiOptions);
+
+    const moveNames = (enemyMoves as string[]).slice(0, 4);
+    while (moveNames.length < 4) moveNames.push('');
+
+    res.json({ moveProbs, moveNames });
+  } catch (e: any) {
+    console.error('[ai-move-dist] Error:', e);
+    res.status(500).json({ error: e?.message || 'AI move dist failed' });
+  }
+});
+
+// --- Matchup Finder ---
+
+app.post('/api/matchups', (req, res) => {
+  try {
+    const { myText = '', enemyText = '', enemySpecies, gen = 9 } = req.body || {};
+    if (!enemySpecies) return res.status(400).json({ error: 'enemySpecies is required' });
+
+    const genNum = Number(gen) as GenerationNum;
+    const g = Generations.get(genNum);
+
+    const mySets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+    const enemySets = parseEnemyCompactLines(String(enemyText)).map(normalizeNoEVs);
+
+    const enemySet = enemySets.find(s => key(s.species) === key(String(enemySpecies)));
+    if (!enemySet) return res.status(404).json({ error: `Unknown enemy: ${enemySpecies}` });
+
+    const enemyPoke = toCalcPokemon(g, enemySet);
+    const enemySpeed = enemyPoke.rawStats.spe;
+
+    const results = mySets.map(mySet => {
+      let mySpeed = 0;
+      try {
+        const myPoke = toCalcPokemon(g, mySet);
+        mySpeed = myPoke.rawStats.spe;
+      } catch { /* fall through with speed 0 */ }
+      const isFaster = mySpeed >= enemySpeed;
+
+      let bestMove = '';
+      let bestMaxPct = 0;
+      let bestMinPct = 0;
+      for (const moveName of mySet.moves) {
+        if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
+        try {
+          const sum = damageSummary(genNum, mySet, enemySet, moveName);
+          if (sum.maxPct > bestMaxPct) {
+            bestMaxPct = sum.maxPct;
+            bestMinPct = sum.minPct;
+            bestMove = moveName;
+          }
+        } catch { /* skip moves the calc can't handle */ }
+      }
+
+      let enemyBestMove = '';
+      let enemyBestMaxPct = 0;
+      for (const moveName of enemySet.moves) {
+        if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
+        try {
+          const sum = damageSummary(genNum, enemySet, mySet, moveName);
+          if (sum.maxPct > enemyBestMaxPct) {
+            enemyBestMaxPct = sum.maxPct;
+            enemyBestMove = moveName;
+          }
+        } catch { /* skip */ }
+      }
+
+      let tier: 'fastOhko' | 'slowOhko' | 'fast2hko' | 'slow2hko' | 'none' = 'none';
+      if (bestMaxPct >= 100) {
+        tier = isFaster ? 'fastOhko' : 'slowOhko';
+      } else if (bestMinPct * 2 >= 100) {
+        if (isFaster) {
+          tier = 'fast2hko';
+        } else if (enemyBestMaxPct < 100) {
+          tier = 'slow2hko';
+        }
+      }
+
+      return {
+        species: mySet.species,
+        tier,
+        bestMove,
+        bestMoveDmgPct: bestMaxPct,
+        bestMoveMinPct: bestMinPct,
+        enemyBestMove,
+        enemyBestDmgPct: enemyBestMaxPct,
+        mySpeed,
+        enemySpeed,
+      };
+    });
+
+    res.json(results);
+  } catch (e: any) {
+    console.error('[matchups] Error:', e);
+    res.status(500).json({ error: e?.message || 'matchups failed' });
+  }
+});
+
+app.post('/api/find-tanks', (req, res) => {
+  try {
+    const { myText = '', enemyText = '', enemySpecies, enemyMove, gen = 9 } = req.body || {};
+    if (!enemySpecies || !enemyMove) {
+      return res.status(400).json({ error: 'enemySpecies and enemyMove are required' });
+    }
+
+    const genNum = Number(gen) as GenerationNum;
+    const mySets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+    const enemySets = parseEnemyCompactLines(String(enemyText)).map(normalizeNoEVs);
+
+    const enemySet = enemySets.find(s => key(s.species) === key(String(enemySpecies)));
+    if (!enemySet) return res.status(404).json({ error: `Unknown enemy: ${enemySpecies}` });
+
+    const results = mySets.map(mySet => {
+      let dmgMaxPct = 0;
+      try {
+        const sum = damageSummary(genNum, enemySet, mySet, String(enemyMove));
+        dmgMaxPct = sum.maxPct;
+      } catch { /* move may not be valid against this target */ }
+
+      const hitsToKO = dmgMaxPct > 0 ? Math.ceil(100 / dmgMaxPct) : 999;
+      let tier: 'elite' | 'good' | 'none' = 'none';
+      if (hitsToKO >= 5) tier = 'elite';
+      else if (hitsToKO >= 3) tier = 'good';
+
+      return {
+        species: mySet.species,
+        hitsToKO,
+        dmgPctPerHit: dmgMaxPct,
+        tier,
+      };
+    });
+
+    res.json(results);
+  } catch (e: any) {
+    console.error('[find-tanks] Error:', e);
+    res.status(500).json({ error: e?.message || 'find-tanks failed' });
+  }
 });
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;

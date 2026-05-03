@@ -7,6 +7,7 @@ import {
   replaceBlockInMyText,
   appendBlockToMyText,
   deleteBlockFromMyText,
+  keepBlocksByIndices,
 } from '../logic/parsers';
 
 type Props = {
@@ -21,6 +22,7 @@ export default function TeamEditor({ myText, gen, onMyTextChange }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<string[]>([]);
+  const [speciesList, setSpeciesList] = useState<string[]>([]);
 
   useEffect(() => {
     fetch(`/api/items?gen=${gen}`)
@@ -28,6 +30,13 @@ export default function TeamEditor({ myText, gen, onMyTextChange }: Props) {
       .then((data: string[]) => setItems(data))
       .catch(() => setItems([]));
   }, [gen]);
+
+  useEffect(() => {
+    fetch('/api/species')
+      .then(r => r.json())
+      .then((data: string[]) => setSpeciesList(data))
+      .catch(() => setSpeciesList([]));
+  }, []);
 
   const fetchTeamDetails = useCallback(async () => {
     if (!myText.trim()) {
@@ -90,15 +99,83 @@ export default function TeamEditor({ myText, gen, onMyTextChange }: Props) {
     });
   }, [myText, selectedIndex, collection.length, onMyTextChange]);
 
+  const [starred, setStarred] = useState<Set<number>>(new Set());
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
+
+  const toggleStar = useCallback((idx: number) => {
+    setStarred(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const unstarredCount = collection.length - starred.size;
+
+  const handleClearAll = useCallback(() => {
+    if (starred.size === 0) {
+      onMyTextChange('');
+    } else {
+      const newText = keepBlocksByIndices(myText, starred);
+      onMyTextChange(newText);
+    }
+    setSelectedIndex(null);
+    setStarred(prev => {
+      if (prev.size === 0) return prev;
+      const remap = new Set<number>();
+      const sortedStarred = [...prev].sort((a, b) => a - b);
+      sortedStarred.forEach((_, i) => remap.add(i));
+      return remap;
+    });
+    setConfirmClearAll(false);
+  }, [onMyTextChange, myText, starred]);
+
   const selected = selectedIndex !== null ? collection[selectedIndex] : null;
 
   return (
     <div className="flex gap-4 min-h-[600px]">
+      {confirmClearAll && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-5 max-w-sm w-full mx-4 shadow-xl">
+            <p className="text-sm text-neutral-200 mb-4">
+              {starred.size > 0
+                ? `Remove ${unstarredCount} unstarred Pokemon? ${starred.size} starred Pokemon will be kept.`
+                : `Are you sure you want to clear all ${collection.length} Pokemon from your collection? This cannot be undone.`}
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmClearAll(false)}
+                className="px-4 py-1.5 rounded-lg text-sm bg-neutral-700 hover:bg-neutral-600 text-neutral-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClearAll}
+                className="px-4 py-1.5 rounded-lg text-sm bg-red-600 hover:bg-red-500 text-white font-semibold transition-colors"
+              >
+                {starred.size > 0 ? 'Clear Unstarred' : 'Clear All'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Left: Collection List */}
       <div className="w-1/2 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4 flex flex-col">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-base font-semibold">Pokemon Collection</h3>
-          <span className="text-xs text-neutral-500">{collection.length} pokemon</span>
+          <div className="flex items-center gap-2">
+            {collection.length > 0 && unstarredCount > 0 && (
+              <button
+                onClick={() => setConfirmClearAll(true)}
+                className="text-[11px] px-2 py-0.5 rounded-md bg-red-900/40 hover:bg-red-800/60 text-red-300 transition-colors"
+              >
+                {starred.size > 0 ? 'Clear Unstarred' : 'Clear All'}
+              </button>
+            )}
+            <span className="text-xs text-neutral-500">{collection.length} pokemon</span>
+          </div>
         </div>
 
         {loading && (
@@ -119,36 +196,49 @@ export default function TeamEditor({ myText, gen, onMyTextChange }: Props) {
 
         <div className="flex-1 overflow-y-auto space-y-1">
           {collection.map((poke, idx) => (
-            <button
+            <div
               key={`${poke.species}-${idx}`}
-              onClick={() => setSelectedIndex(idx)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${
+              className={`flex items-center gap-1 rounded-xl transition-colors ${
                 selectedIndex === idx
                   ? 'bg-neutral-700/80 border border-neutral-600'
                   : 'hover:bg-neutral-800/80 border border-transparent'
               }`}
             >
-              <PokemonIcon name={poke.species} size={40} />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-sm truncate">{poke.species}</div>
-                <div className="text-[11px] text-neutral-400 flex gap-2">
-                  <span>Lv. {poke.level}</span>
-                  {poke.item && <span>@ {poke.item}</span>}
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleStar(idx); }}
+                className={`shrink-0 pl-2 pr-0.5 py-2.5 text-base transition-colors ${
+                  starred.has(idx) ? 'text-yellow-400' : 'text-neutral-600 hover:text-neutral-400'
+                }`}
+                title={starred.has(idx) ? 'Unstar (remove protection)' : 'Star (protect from Clear All)'}
+              >
+                {starred.has(idx) ? '\u2605' : '\u2606'}
+              </button>
+              <button
+                onClick={() => setSelectedIndex(idx)}
+                className="flex-1 flex items-center gap-3 pr-3 py-2.5 text-left min-w-0"
+              >
+                <PokemonIcon name={poke.species} size={40} />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm truncate">{poke.species}</div>
+                  <div className="text-[11px] text-neutral-400 flex gap-2">
+                    <span>Lv. {poke.level}</span>
+                    {poke.item && <span>@ {poke.item}</span>}
+                  </div>
                 </div>
-              </div>
-              <div className="flex gap-1">
-                {poke.types.map(t => (
-                  <span
-                    key={t}
-                    className={`text-[9px] px-1.5 py-0.5 rounded font-semibold text-white ${
-                      TYPE_COLORS[t] ?? 'bg-neutral-600'
-                    }`}
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-            </button>
+                <div className="flex gap-1">
+                  {poke.types.map(t => (
+                    <span
+                      key={t}
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-semibold text-white ${
+                        TYPE_COLORS[t] ?? 'bg-neutral-600'
+                      }`}
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            </div>
           ))}
         </div>
       </div>
@@ -161,6 +251,7 @@ export default function TeamEditor({ myText, gen, onMyTextChange }: Props) {
             pokemon={selected}
             gen={gen}
             items={items}
+            speciesList={speciesList}
             onSave={handleSave}
             onDuplicate={handleDuplicate}
             onDelete={handleDelete}

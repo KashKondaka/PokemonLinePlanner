@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PokemonIcon from './PokemonIcon';
 import type { EnrichedPokemon } from '../logic/parsers';
 
@@ -77,16 +77,91 @@ type LearnsetData = {
   moves: string[];
   abilities: string[];
   moveDetails: Record<string, MoveDetail>;
+  baseStats?: Record<string, number>;
+  types?: string[];
 };
 
 type Props = {
   pokemon: EnrichedPokemon;
   gen: number;
   items: string[];
+  speciesList: string[];
   onSave: (updated: EnrichedPokemon) => void;
   onDuplicate: (pokemon: EnrichedPokemon) => void;
   onDelete: () => void;
 };
+
+function SpeciesSelect({ value, speciesList, onChange }: {
+  value: string;
+  speciesList: string[];
+  onChange: (species: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = isOpen
+    ? (query
+        ? speciesList.filter(s => s.toLowerCase().includes(query.toLowerCase()))
+        : speciesList
+      ).slice(0, 100)
+    : [];
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <input
+        ref={inputRef}
+        type="text"
+        value={isOpen ? query : value}
+        onChange={e => {
+          setQuery(e.target.value);
+          if (!isOpen) setIsOpen(true);
+        }}
+        onFocus={() => {
+          setIsOpen(true);
+          setQuery('');
+        }}
+        placeholder="Search species..."
+        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-1.5 text-xl font-bold"
+      />
+      {isOpen && (
+        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-y-auto bg-neutral-800 border border-neutral-600 rounded-lg shadow-xl">
+          {filtered.length > 0 ? filtered.map(s => (
+            <button
+              key={s}
+              type="button"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                onChange(s);
+                setIsOpen(false);
+                setQuery('');
+                inputRef.current?.blur();
+              }}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-neutral-700 transition-colors ${
+                s === value ? 'bg-neutral-700/60 text-emerald-400 font-medium' : 'text-neutral-200'
+              }`}
+            >
+              {s}
+            </button>
+          )) : (
+            <div className="px-3 py-2 text-sm text-neutral-500">No species found</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ConfirmDialog({ message, onConfirm, onCancel }: {
   message: string;
@@ -116,7 +191,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }: {
   );
 }
 
-export default function PokemonEditorPanel({ pokemon, gen, items, onSave, onDuplicate, onDelete }: Props) {
+export default function PokemonEditorPanel({ pokemon, gen, items, speciesList, onSave, onDuplicate, onDelete }: Props) {
   const [draft, setDraft] = useState<EnrichedPokemon>({ ...pokemon });
   const [learnset, setLearnset] = useState<LearnsetData>({ moves: [], abilities: [], moveDetails: {} });
   const [confirm, setConfirm] = useState<{ action: 'save' | 'duplicate' | 'delete' } | null>(null);
@@ -137,6 +212,28 @@ export default function PokemonEditorPanel({ pokemon, gen, items, onSave, onDupl
       });
     return () => { cancelled = true; };
   }, [pokemon.species, gen]);
+
+  const handleSpeciesChange = useCallback(async (newSpecies: string) => {
+    if (newSpecies === draft.species) return;
+    try {
+      const resp = await fetch(`/api/learnset/${encodeURIComponent(newSpecies)}?gen=${gen}`);
+      const data: LearnsetData = await resp.json();
+      setLearnset(data);
+      setDraft(prev => ({
+        ...prev,
+        species: newSpecies,
+        baseStats: data.baseStats ?? prev.baseStats,
+        types: data.types ?? prev.types,
+        ability: data.abilities?.length
+          ? (data.abilities.includes(prev.ability ?? '') ? prev.ability : data.abilities[0])
+          : undefined,
+        moves: ['', '', '', ''],
+        moveDetails: Array.from({ length: 4 }, () => ({ name: '', bp: 0, type: 'Normal', category: 'Status' })),
+      }));
+    } catch {
+      setDraft(prev => ({ ...prev, species: newSpecies }));
+    }
+  }, [gen, draft.species]);
 
   const updateField = useCallback(<K extends keyof EnrichedPokemon>(key: K, value: EnrichedPokemon[K]) => {
     setDraft(prev => ({ ...prev, [key]: value }));
@@ -195,8 +292,12 @@ export default function PokemonEditorPanel({ pokemon, gen, items, onSave, onDupl
       {/* Header */}
       <div className="flex items-center gap-3 mb-4 pb-3 border-b border-neutral-700">
         <PokemonIcon name={draft.species} size={64} />
-        <div className="flex-1">
-          <h2 className="text-xl font-bold">{draft.species}</h2>
+        <div className="flex-1 min-w-0">
+          {speciesList.length > 0 ? (
+            <SpeciesSelect value={draft.species} speciesList={speciesList} onChange={handleSpeciesChange} />
+          ) : (
+            <h2 className="text-xl font-bold">{draft.species}</h2>
+          )}
           <div className="flex gap-1.5 mt-1">
             {draft.types.map(t => (
               <span

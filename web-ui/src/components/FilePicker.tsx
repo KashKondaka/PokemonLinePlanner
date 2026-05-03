@@ -65,12 +65,6 @@ export default function FilePicker({
         >
           Upload {label}
         </button>
-        <button
-          onClick={handleClear}
-          className="rounded-xl px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 text-sm"
-        >
-          Clear
-        </button>
         <div className="text-xs text-neutral-400 truncate">
           {fileName ? fileName : currentText ? '(from text)' : 'No file selected'}
         </div>
