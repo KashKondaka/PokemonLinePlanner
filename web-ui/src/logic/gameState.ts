@@ -25,6 +25,7 @@ export interface IntimidateEffect {
 export interface DamageAction {
   type: 'damage';
   turnIndex: number;
+  actionKey?: string;
   targetTeam: 'my' | 'enemy';
   targetIndex: number;
   damageHP: number;
@@ -38,6 +39,7 @@ export interface DamageAction {
 export interface StatChangeAction {
   type: 'stat-change';
   turnIndex: number;
+  actionKey?: string;
   targetTeam: 'my' | 'enemy';
   targetIndex: number;
   statChanges: { stat: string; stages: number }[];
@@ -47,6 +49,7 @@ export interface StatChangeAction {
 export interface StatusMoveAction {
   type: 'status-move';
   turnIndex: number;
+  actionKey?: string;
   targetTeam: 'my' | 'enemy';
   targetIndex: number;
   statusEffect: StatusType;
@@ -54,7 +57,23 @@ export interface StatusMoveAction {
   intimidateEffects?: IntimidateEffect[];
 }
 
-export type GameAction = DamageAction | StatChangeAction | StatusMoveAction;
+export interface EndOfTurnEffect {
+  targetTeam: 'my' | 'enemy';
+  targetIndex: number;
+  healHP: number;
+  maxHP: number;
+  source: 'leftovers';
+  pokemonName: string;
+}
+
+export interface EndOfTurnAction {
+  type: 'end-of-turn';
+  actionKey?: string;
+  turnIndex: number;
+  effects: EndOfTurnEffect[];
+}
+
+export type GameAction = DamageAction | StatChangeAction | StatusMoveAction | EndOfTurnAction;
 
 // --- Clone helpers ---
 
@@ -268,6 +287,27 @@ function applyStatusMove(state: GameState, action: StatusMoveAction): GameState 
   return { ...result, enemyTeam: team };
 }
 
+function applyEndOfTurn(state: GameState, action: EndOfTurnAction): GameState {
+  let result: GameState = { myTeam: [...state.myTeam], enemyTeam: [...state.enemyTeam] };
+  for (const eff of action.effects) {
+    const team = eff.targetTeam === 'my' ? [...result.myTeam] : [...result.enemyTeam];
+    const member = team[eff.targetIndex];
+    if (!member || (member.pct ?? 100) <= 0) continue;
+
+    const maxHP = eff.maxHP > 0 ? eff.maxHP : (member.maxHP ?? 0);
+    const curHP = typeof member.curHP === 'number' ? member.curHP : Math.round(((member.pct ?? 100) / 100) * maxHP);
+    if (curHP >= maxHP) continue;
+
+    const newHP = Math.min(maxHP, curHP + eff.healHP);
+    const newPct = maxHP > 0 ? Math.round((newHP / maxHP) * 100) : member.pct ?? 100;
+    team[eff.targetIndex] = { ...member, curHP: newHP, pct: newPct, maxHP };
+
+    if (eff.targetTeam === 'my') result = { ...result, myTeam: team };
+    else result = { ...result, enemyTeam: team };
+  }
+  return result;
+}
+
 // --- Public API ---
 
 export function applyAction(state: GameState, action: GameAction): GameState {
@@ -275,6 +315,7 @@ export function applyAction(state: GameState, action: GameAction): GameState {
     case 'damage': return applyDamage(state, action);
     case 'stat-change': return applyStatChange(state, action);
     case 'status-move': return applyStatusMove(state, action);
+    case 'end-of-turn': return applyEndOfTurn(state, action);
   }
 }
 

@@ -58,6 +58,8 @@ export type SubAction = {
     berryUsedName?: string;
     eotType?: string;
     eotLossPct?: number;
+    leftoversHealHP?: number;
+    leftoversTarget?: string;
     isStatChange?: boolean;
     statChanges?: Array<{ stat: string; stages: number; target: string }>;
     isStatusMove?: boolean;
@@ -94,6 +96,7 @@ type SubActionRowProps = {
   label: string;
   action: SubAction;
   moves: string[];
+  locked?: boolean;
   attackerInfo?: MemberLookup;
   defenderInfo?: MemberLookup;
   attackerTeam?: TeamMember[];
@@ -106,7 +109,7 @@ type SubActionRowProps = {
   onClearAttacker: () => void;
   onSetDefender: (name: string, source: 'my' | 'enemy') => void;
   onClearDefender: () => void;
-  onSelectMove: (move: string) => void;
+  onSelectMove: (move: string | undefined) => void;
   onToggleSwitch: () => void;
   onCalc: () => void;
   onRun: () => void;
@@ -117,7 +120,7 @@ type SubActionRowProps = {
 };
 
 function SubActionRow({
-  label, action, moves, attackerInfo, defenderInfo,
+  label, action, moves, locked, attackerInfo, defenderInfo,
   attackerTeam, defenderTeam, switchTeam, switchAnnotations,
   onSetSwitch, onClearSwitch,
   onSetAttacker, onClearAttacker, onSetDefender, onClearDefender,
@@ -149,8 +152,16 @@ function SubActionRow({
       ? `${action.result.target} was ${action.result.statusEffect}${action.result.berryCured ? ' (cured)' : ''}!`
       : null;
 
+  const notes: string[] = [];
+  if (action.runApplied && action.chosen) {
+    if (action.chosen.berryUsedName) notes.push(`${action.chosen.berryUsedName} Berry consumed`);
+    if (action.chosen.eotType && action.chosen.eotLossPct) notes.push(`${action.chosen.eotType} -${action.chosen.eotLossPct}%`);
+    if (action.chosen.leftoversHealHP && action.chosen.leftoversTarget) notes.push(`${action.chosen.leftoversTarget} healed ${action.chosen.leftoversHealHP} HP with Leftovers`);
+  }
+
   return (
-    <div className="flex items-center gap-2 py-1">
+    <div>
+    <div className={`flex items-center gap-2 py-1 ${locked ? 'pointer-events-none opacity-50' : ''}`}>
       <div className="w-12 text-[10px] text-neutral-500 text-right shrink-0 font-medium">{label}</div>
 
       {isSwitch ? (
@@ -293,12 +304,19 @@ function SubActionRow({
         </>
       )}
     </div>
+    {notes.length > 0 && (
+      <div className="ml-14 text-[9px] text-amber-400 leading-tight">
+        {notes.map((n, i) => <div key={i}>{n}</div>)}
+      </div>
+    )}
+    </div>
   );
 }
 
 type TurnCardProps = {
   turn: Turn;
   index: number;
+  isCurrent: boolean;
   playerMoves: string[];
   enemyMoves: string[];
   playerAttackerInfo?: MemberLookup;
@@ -324,7 +342,7 @@ type TurnCardProps = {
 };
 
 export default function TurnCard({
-  turn, index,
+  turn, index, isCurrent,
   playerMoves, enemyMoves,
   playerAttackerInfo, playerDefenderInfo,
   enemyAttackerInfo, enemyDefenderInfo,
@@ -336,8 +354,71 @@ export default function TurnCard({
   onUndoPlayer, onUndoEnemy,
   onDelete, weatherSymbol, screenSymbols,
 }: TurnCardProps) {
+
+  function playerSetAttacker(name: string, src: 'my' | 'enemy') {
+    if (turn.playerAction.runApplied) onUndoPlayer();
+    const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
+    if (turn.playerAction.defenderSource && turn.playerAction.defenderSource === src) {
+      update.defenderName = undefined;
+      update.defenderSource = undefined;
+    }
+    onUpdatePlayerAction(update);
+  }
+
+  function playerSetDefender(name: string, src: 'my' | 'enemy') {
+    if (turn.playerAction.runApplied) onUndoPlayer();
+    const update: Partial<SubAction> = { defenderName: name, defenderSource: src, result: undefined, error: null };
+    if (turn.playerAction.attackerSource && turn.playerAction.attackerSource === src) {
+      update.attackerName = undefined;
+      update.attackerSource = undefined;
+      update.moveName = undefined;
+    }
+    onUpdatePlayerAction(update);
+  }
+
+  function enemySetAttacker(name: string, src: 'my' | 'enemy') {
+    if (turn.enemyAction.runApplied) onUndoEnemy();
+    const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
+    if (turn.enemyAction.defenderSource && turn.enemyAction.defenderSource === src) {
+      update.defenderName = undefined;
+      update.defenderSource = undefined;
+    }
+    onUpdateEnemyAction(update);
+  }
+
+  function enemySetDefender(name: string, src: 'my' | 'enemy') {
+    if (turn.enemyAction.runApplied) onUndoEnemy();
+    const update: Partial<SubAction> = { defenderName: name, defenderSource: src, result: undefined, error: null };
+    if (turn.enemyAction.attackerSource && turn.enemyAction.attackerSource === src) {
+      update.attackerName = undefined;
+      update.attackerSource = undefined;
+      update.moveName = undefined;
+    }
+    onUpdateEnemyAction(update);
+  }
+
+  function playerClearAttacker() {
+    if (turn.playerAction.runApplied) onUndoPlayer();
+    onUpdatePlayerAction({ attackerName: undefined, attackerSource: undefined, moveName: undefined, result: undefined, error: null });
+  }
+
+  function playerClearDefender() {
+    if (turn.playerAction.runApplied) onUndoPlayer();
+    onUpdatePlayerAction({ defenderName: undefined, defenderSource: undefined, result: undefined, error: null });
+  }
+
+  function enemyClearAttacker() {
+    if (turn.enemyAction.runApplied) onUndoEnemy();
+    onUpdateEnemyAction({ attackerName: undefined, attackerSource: undefined, moveName: undefined, result: undefined, error: null });
+  }
+
+  function enemyClearDefender() {
+    if (turn.enemyAction.runApplied) onUndoEnemy();
+    onUpdateEnemyAction({ defenderName: undefined, defenderSource: undefined, result: undefined, error: null });
+  }
+
   return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-2">
+    <div className={`rounded-xl border ${isCurrent ? 'border-neutral-800' : 'border-neutral-800/60'} bg-neutral-900/40 p-2`}>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-neutral-300">Turn {index + 1}</span>
@@ -357,6 +438,7 @@ export default function TurnCard({
         label="Player"
         action={turn.playerAction}
         moves={playerMoves}
+        locked={!isCurrent}
         attackerInfo={playerAttackerInfo}
         defenderInfo={playerDefenderInfo}
         attackerTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
@@ -364,26 +446,14 @@ export default function TurnCard({
         switchTeam={aliveMyMembers}
         onSetSwitch={(name, src) => onUpdatePlayerAction({ switchTo: name, switchSource: src })}
         onClearSwitch={() => onUpdatePlayerAction({ switchTo: undefined, switchSource: undefined })}
-        onSetAttacker={(name, src) => {
-          const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
-          if (turn.playerAction.defenderSource && turn.playerAction.defenderSource === src) {
-            update.defenderName = undefined;
-            update.defenderSource = undefined;
-          }
-          onUpdatePlayerAction(update);
+        onSetAttacker={playerSetAttacker}
+        onClearAttacker={playerClearAttacker}
+        onSetDefender={playerSetDefender}
+        onClearDefender={playerClearDefender}
+        onSelectMove={move => {
+          if (turn.playerAction.runApplied) onUndoPlayer();
+          onUpdatePlayerAction({ moveName: move || undefined, result: undefined, error: null });
         }}
-        onClearAttacker={() => onUpdatePlayerAction({ attackerName: undefined, attackerSource: undefined, moveName: undefined, result: undefined, error: null })}
-        onSetDefender={(name, src) => {
-          const update: Partial<SubAction> = { defenderName: name, defenderSource: src, result: undefined, error: null };
-          if (turn.playerAction.attackerSource && turn.playerAction.attackerSource === src) {
-            update.attackerName = undefined;
-            update.attackerSource = undefined;
-            update.moveName = undefined;
-          }
-          onUpdatePlayerAction(update);
-        }}
-        onClearDefender={() => onUpdatePlayerAction({ defenderName: undefined, defenderSource: undefined, result: undefined, error: null })}
-        onSelectMove={move => onUpdatePlayerAction({ moveName: move, result: undefined, error: null })}
         onToggleSwitch={() => onUpdatePlayerAction({
           type: turn.playerAction.type === 'switch' ? 'attack' : 'switch',
           moveName: undefined, result: undefined, error: null,
@@ -402,6 +472,7 @@ export default function TurnCard({
         label="Enemy"
         action={turn.enemyAction}
         moves={enemyMoves}
+        locked={!isCurrent}
         attackerInfo={enemyAttackerInfo}
         defenderInfo={enemyDefenderInfo}
         attackerTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
@@ -410,26 +481,14 @@ export default function TurnCard({
         switchAnnotations={enemySwitchAnnotations}
         onSetSwitch={(name, src) => onUpdateEnemyAction({ switchTo: name, switchSource: src })}
         onClearSwitch={() => onUpdateEnemyAction({ switchTo: undefined, switchSource: undefined })}
-        onSetAttacker={(name, src) => {
-          const update: Partial<SubAction> = { attackerName: name, attackerSource: src, moveName: undefined, result: undefined, error: null };
-          if (turn.enemyAction.defenderSource && turn.enemyAction.defenderSource === src) {
-            update.defenderName = undefined;
-            update.defenderSource = undefined;
-          }
-          onUpdateEnemyAction(update);
+        onSetAttacker={enemySetAttacker}
+        onClearAttacker={enemyClearAttacker}
+        onSetDefender={enemySetDefender}
+        onClearDefender={enemyClearDefender}
+        onSelectMove={move => {
+          if (turn.enemyAction.runApplied) onUndoEnemy();
+          onUpdateEnemyAction({ moveName: move || undefined, result: undefined, error: null });
         }}
-        onClearAttacker={() => onUpdateEnemyAction({ attackerName: undefined, attackerSource: undefined, moveName: undefined, result: undefined, error: null })}
-        onSetDefender={(name, src) => {
-          const update: Partial<SubAction> = { defenderName: name, defenderSource: src, result: undefined, error: null };
-          if (turn.enemyAction.attackerSource && turn.enemyAction.attackerSource === src) {
-            update.attackerName = undefined;
-            update.attackerSource = undefined;
-            update.moveName = undefined;
-          }
-          onUpdateEnemyAction(update);
-        }}
-        onClearDefender={() => onUpdateEnemyAction({ defenderName: undefined, defenderSource: undefined, result: undefined, error: null })}
-        onSelectMove={move => onUpdateEnemyAction({ moveName: move, result: undefined, error: null })}
         onToggleSwitch={() => onUpdateEnemyAction({
           type: turn.enemyAction.type === 'switch' ? 'attack' : 'switch',
           moveName: undefined, result: undefined, error: null,

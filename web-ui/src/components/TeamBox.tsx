@@ -59,6 +59,8 @@ const ITEM_OPTIONS: { label: string; value?: string }[] = [
   { label: 'aspear', value: 'Aspear Berry' },
   { label: 'chesto', value: 'Chesto Berry' },
   { label: 'cheri', value: 'Cheri Berry' },
+  // Passive healing
+  { label: 'leftovers', value: 'Leftovers' },
   // Boosters (short codes → canonical)
   { label: 'blk glss', value: 'Black Glasses' },
   { label: 'nvr ice', value: 'Never-Melt Ice' },

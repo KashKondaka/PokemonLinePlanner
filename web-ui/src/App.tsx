@@ -47,6 +47,8 @@ import {
   type DamageAction,
   type StatChangeAction,
   type StatusMoveAction,
+  type EndOfTurnAction,
+  type EndOfTurnEffect,
   type IntimidateEffect,
   cloneMember,
   computeDamageEffects,
@@ -503,7 +505,9 @@ export default function App() {
       setInitialState({ myTeam: baseMyTeam.map(cloneMember), enemyTeam: baseEnemyTeam.map(cloneMember) });
     }
 
-    const actionKey = `${turnIdx}-${side}`;
+    const actionKey = `turn-${turn.id}-${side}`;
+
+    let builtAction: GameAction | null = null;
 
     if (action.result.isStatChange && action.result.statChanges && action.result.target) {
       const targetCanon = resolveCanonicalName(action.result.target, dicts) ?? action.result.target;
@@ -511,71 +515,134 @@ export default function App() {
       if (!loc.team) return;
       const ga: StatChangeAction = {
         type: 'stat-change', turnIndex: turns.length * 2 + (side === 'enemy' ? 1 : 0),
+        actionKey,
         targetTeam: loc.team, targetIndex: loc.index,
         statChanges: action.result.statChanges.map(sc => ({ stat: sc.stat, stages: sc.stages })),
         intimidateEffects: intimidateEffects.length ? intimidateEffects : undefined,
       };
+      builtAction = ga;
       setActionLog(prev => [...prev, ga]);
       updateSubAction(turnIdx, side, {
         runApplied: true,
         chosen: { attacker: attackerName, move: moveName, defender: targetCanon, finalPct: loc.member?.pct ?? 100, isStatChange: true, statChanges: action.result!.statChanges },
       });
-      return;
-    }
-
-    if (action.result.isStatusMove && action.result.statusEffect && action.result.target) {
+    } else if (action.result.isStatusMove && action.result.statusEffect && action.result.target) {
       const targetCanon = resolveCanonicalName(action.result.target, dicts) ?? action.result.target;
       const loc = findMember(targetCanon);
       if (!loc.team) return;
       const ga: StatusMoveAction = {
         type: 'status-move', turnIndex: turns.length * 2 + (side === 'enemy' ? 1 : 0),
+        actionKey,
         targetTeam: loc.team, targetIndex: loc.index,
         statusEffect: action.result.statusEffect as StatusType,
         berryCured: !!action.result.berryCured,
         intimidateEffects: intimidateEffects.length ? intimidateEffects : undefined,
       };
+      builtAction = ga;
       setActionLog(prev => [...prev, ga]);
       updateSubAction(turnIdx, side, {
         runApplied: true,
         chosen: { attacker: attackerName, move: moveName, defender: targetCanon, finalPct: loc.member?.pct ?? 100, isStatusMove: true, statusEffect: action.result!.statusEffect },
       });
-      return;
+    } else {
+      // Damage move
+      const { defender, defenderMaxHP } = action.result;
+      const defCanon = resolveCanonicalName(defender, dicts) ?? defender;
+      const loc = findMember(defCanon);
+      if (!loc.team) return;
+
+      const options = (action.useCrit ? action.result.rollOptionsCrit : action.result.rollOptionsNormal) ?? [0];
+      const selectedIdx = Math.max(0, Math.min((action.selectedRollIndex ?? 0), options.length - 1));
+      const selectedDamageHP = Math.max(0, Math.round(options[selectedIdx] ?? 0));
+      const maxHP = typeof defenderMaxHP === 'number' && defenderMaxHP > 0
+        ? defenderMaxHP : (typeof loc.member?.maxHP === 'number' ? loc.member.maxHP : undefined);
+      if (typeof maxHP !== 'number') return;
+
+      const ga: DamageAction = {
+        type: 'damage',
+        turnIndex: turns.length * 2 + (side === 'enemy' ? 1 : 0),
+        actionKey,
+        targetTeam: loc.team, targetIndex: loc.index,
+        damageHP: selectedDamageHP, defenderMaxHP: maxHP,
+        appliesStatus: action.result.appliesStatus ?? undefined,
+        weather: turns[turnIdx].weather, gen,
+        intimidateEffects: intimidateEffects.length ? intimidateEffects : undefined,
+      };
+      builtAction = ga;
+      setActionLog(prev => [...prev, ga]);
+
+      const effects = computeDamageEffects(loc.member, ga);
+      updateSubAction(turnIdx, side, {
+        runApplied: true,
+        chosen: {
+          attacker: attackerName, move: moveName, defender: defCanon,
+          finalPct: effects.finalPct, finalHP: effects.finalHP, maxHP: effects.maxHP,
+          berryUsedName: effects.berryUsedName,
+          eotType: effects.eotType, eotLossPct: effects.eotLossPct,
+        },
+      });
     }
 
-    // Damage move
-    const { defender, defenderMaxHP } = action.result;
-    const defCanon = resolveCanonicalName(defender, dicts) ?? defender;
-    const loc = findMember(defCanon);
-    if (!loc.team) return;
+    // --- End-of-turn Leftovers check ---
+    if (!builtAction) return;
+    const otherSide = side === 'player' ? 'enemy' : 'player';
+    const otherAction = otherSide === 'player' ? turn.playerAction : turn.enemyAction;
+    if (!otherAction.runApplied) return;
 
-    const options = (action.useCrit ? action.result.rollOptionsCrit : action.result.rollOptionsNormal) ?? [0];
-    const selectedIdx = Math.max(0, Math.min((action.selectedRollIndex ?? 0), options.length - 1));
-    const selectedDamageHP = Math.max(0, Math.round(options[selectedIdx] ?? 0));
-    const maxHP = typeof defenderMaxHP === 'number' && defenderMaxHP > 0
-      ? defenderMaxHP : (typeof loc.member?.maxHP === 'number' ? loc.member.maxHP : undefined);
-    if (typeof maxHP !== 'number') return;
+    const playerAct = turn.playerAction;
+    const enemyAct = turn.enemyAction;
+    const playerActiveName = playerAct.type === 'switch' ? playerAct.switchTo : playerAct.attackerName;
+    const enemyActiveName = enemyAct.type === 'switch' ? enemyAct.switchTo : enemyAct.attackerName;
 
-    const ga: DamageAction = {
-      type: 'damage',
-      turnIndex: turns.length * 2 + (side === 'enemy' ? 1 : 0),
-      targetTeam: loc.team, targetIndex: loc.index,
-      damageHP: selectedDamageHP, defenderMaxHP: maxHP,
-      appliesStatus: action.result.appliesStatus ?? undefined,
-      weather: turns[turnIdx].weather, gen,
-      intimidateEffects: intimidateEffects.length ? intimidateEffects : undefined,
+    const effectiveInitial = initialState ?? {
+      myTeam: baseMyTeam.map(cloneMember),
+      enemyTeam: baseEnemyTeam.map(cloneMember),
     };
-    setActionLog(prev => [...prev, ga]);
+    const postState = replayAll(effectiveInitial, [...actionLog, builtAction]);
 
-    const effects = computeDamageEffects(loc.member, ga);
-    updateSubAction(turnIdx, side, {
-      runApplied: true,
-      chosen: {
-        attacker: attackerName, move: moveName, defender: defCanon,
-        finalPct: effects.finalPct, finalHP: effects.finalHP, maxHP: effects.maxHP,
-        berryUsedName: effects.berryUsedName,
-        eotType: effects.eotType, eotLossPct: effects.eotLossPct,
-      },
-    });
+    const eotEffects: EndOfTurnEffect[] = [];
+    for (const [activeName, sideLabel] of [[playerActiveName, 'player'], [enemyActiveName, 'enemy']] as const) {
+      if (!activeName) continue;
+      const canon = resolveCanonicalName(activeName, dicts) ?? activeName;
+
+      let foundTeam: 'my' | 'enemy' | null = null;
+      let foundIdx = -1;
+      let member: MemberEx | undefined;
+
+      const eIdx = postState.enemyTeam.findIndex(m => m?.name?.toLowerCase() === canon.toLowerCase());
+      if (eIdx !== -1) { foundTeam = 'enemy'; foundIdx = eIdx; member = postState.enemyTeam[eIdx] ?? undefined; }
+      else {
+        const mIdx = postState.myTeam.findIndex(m => m?.name?.toLowerCase() === canon.toLowerCase());
+        if (mIdx !== -1) { foundTeam = 'my'; foundIdx = mIdx; member = postState.myTeam[mIdx] ?? undefined; }
+      }
+
+      if (!foundTeam || !member) continue;
+      if (member.item?.toLowerCase() !== 'leftovers') continue;
+
+      const mHP = member.maxHP ?? 0;
+      const cHP = typeof member.curHP === 'number' ? member.curHP : Math.round(((member.pct ?? 100) / 100) * mHP);
+      if (mHP <= 0 || cHP <= 0 || cHP >= mHP) continue;
+
+      const healHP = Math.max(1, Math.floor(mHP / 16));
+      eotEffects.push({ targetTeam: foundTeam, targetIndex: foundIdx, healHP, maxHP: mHP, source: 'leftovers', pokemonName: canon });
+
+      setTurns(prev => prev.map((t, i) => {
+        if (i !== turnIdx) return t;
+        const key = sideLabel === 'player' ? 'playerAction' : 'enemyAction';
+        const act = t[key];
+        return { ...t, [key]: { ...act, chosen: { ...act.chosen, leftoversHealHP: healHP, leftoversTarget: canon } } };
+      }));
+    }
+
+    if (eotEffects.length > 0) {
+      const eotAction: EndOfTurnAction = {
+        type: 'end-of-turn',
+        actionKey: `turn-${turn.id}-eot`,
+        turnIndex: turns.length * 2 + 2,
+        effects: eotEffects,
+      };
+      setActionLog(prev => [...prev, eotAction]);
+    }
   }
 
   function undoSubAction(turnIdx: number, side: 'player' | 'enemy') {
@@ -583,8 +650,9 @@ export default function App() {
     const action = side === 'player' ? turn.playerAction : turn.enemyAction;
     if (!action.runApplied) return;
 
-    const actionIndex = turns.length * 2 + (side === 'enemy' ? 1 : 0);
-    const newLog = actionLog.slice(0, -1);
+    const key = `turn-${turn.id}-${side}`;
+    const eotKey = `turn-${turn.id}-eot`;
+    const newLog = actionLog.filter(a => a.actionKey !== key && a.actionKey !== eotKey);
     setActionLog(newLog);
 
     if (newLog.length === 0 && initialState) {
@@ -594,9 +662,40 @@ export default function App() {
     }
 
     updateSubAction(turnIdx, side, { runApplied: false, chosen: undefined });
+
+    // Clear Leftovers notes from the other side's chosen too
+    const otherSide: 'player' | 'enemy' = side === 'player' ? 'enemy' : 'player';
+    const otherKey = otherSide === 'player' ? 'playerAction' : 'enemyAction';
+    const otherChosen = turn[otherKey].chosen;
+    if (otherChosen?.leftoversHealHP) {
+      setTurns(prev => prev.map((t, i) => {
+        if (i !== turnIdx) return t;
+        const act = t[otherKey];
+        if (!act.chosen) return t;
+        const { leftoversHealHP, leftoversTarget, ...cleanChosen } = act.chosen as any;
+        return { ...t, [otherKey]: { ...act, chosen: cleanChosen } };
+      }));
+    }
   }
 
   function deleteTurn(i: number) {
+    const turn = turns[i];
+    if (!turn) return;
+
+    const playerKey = `turn-${turn.id}-player`;
+    const enemyKey = `turn-${turn.id}-enemy`;
+    const eotKey = `turn-${turn.id}-eot`;
+    const newLog = actionLog.filter(a => a.actionKey !== playerKey && a.actionKey !== enemyKey && a.actionKey !== eotKey);
+
+    if (newLog.length !== actionLog.length) {
+      setActionLog(newLog);
+      if (newLog.length === 0 && initialState) {
+        setMyTeam(initialState.myTeam.map(cloneMember) as MemberEx[]);
+        setEnemyTeam(initialState.enemyTeam.map(cloneMember) as MemberEx[]);
+        setInitialState(null);
+      }
+    }
+
     setTurns(prev => prev.filter((_, idx) => idx !== i));
   }
 
@@ -620,6 +719,7 @@ export default function App() {
             ? `${c.finalHP}/${c.maxHP} (${c.finalPct}%)` : `${c.finalPct}%`;
           line += ` -> ${c.defender} has ${hpStr} remaining`;
           if (c.berryUsedName) line += ` after consuming ${c.berryUsedName}`;
+          if (c.leftoversHealHP && c.leftoversTarget) line += ` | ${c.leftoversTarget} healed ${c.leftoversHealHP} HP with Leftovers`;
         }
         summary.push(line);
       }
@@ -783,7 +883,11 @@ export default function App() {
                         const img = e.currentTarget.querySelector('img');
                         if (img) e.dataTransfer.setDragImage(img, 16, 16);
                       }}
-                      className="cursor-grab active:cursor-grabbing rounded-lg hover:bg-neutral-800 p-0.5 transition"
+                      onClick={() => {
+                        const emptyIdx = myTeam.findIndex(m => !m?.name);
+                        if (emptyIdx !== -1) addToMyTeam(emptyIdx, name);
+                      }}
+                      className="cursor-pointer cursor-grab active:cursor-grabbing rounded-lg hover:bg-neutral-800 p-0.5 transition"
                       title={name}
                     >
                       <PokemonIcon name={name} size={32} />
@@ -923,6 +1027,7 @@ export default function App() {
                       key={turn.id}
                       turn={turn}
                       index={idx}
+                      isCurrent={idx === turns.length - 1}
                       playerMoves={getMovesForPokemon(pAction.attackerName)}
                       enemyMoves={getMovesForPokemon(eAction.attackerName)}
                       playerAttackerInfo={getMemberInfo(pAction.attackerName, pAction.attackerSource)}

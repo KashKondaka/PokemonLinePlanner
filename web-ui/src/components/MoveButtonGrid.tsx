@@ -3,7 +3,7 @@ import React from 'react';
 type Props = {
   moves: string[];
   selectedMove?: string;
-  onSelectMove: (move: string) => void;
+  onSelectMove: (move: string | undefined) => void;
   aiMoveProbs?: number[];
   disabled?: boolean;
 };
@@ -45,7 +45,7 @@ export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMo
         return (
           <button
             key={i}
-            onClick={() => !disabled && onSelectMove(move)}
+            onClick={() => !disabled && onSelectMove(isSelected ? undefined : move)}
             disabled={disabled}
             className={`h-8 rounded-lg text-[10px] font-medium px-1 truncate transition border relative
               ${isSelected
@@ -59,8 +59,8 @@ export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMo
             title={move + (hasProb ? ` (${(prob * 100).toFixed(1)}%)` : '')}
           >
             <span className="truncate">{move}</span>
-            {hasProb && !isSelected && (
-              <span className="absolute top-0 right-0.5 text-[8px] text-teal-300 font-bold">
+            {hasProb && (
+              <span className={`absolute top-0 right-0.5 text-[8px] font-bold ${isSelected ? 'text-blue-200' : 'text-teal-300'}`}>
                 {(prob * 100).toFixed(0)}%
               </span>
             )}
