@@ -135,7 +135,7 @@ export function computeDamageEffects(
   const rule = inferBerryRule(heldBerryName, action.gen);
   let berryUsedName: string | undefined;
 
-  if (rule && postPct <= rule.thresholdPct) {
+  if (rule && postHP > 0 && postPct <= rule.thresholdPct) {
     const healHP = rule.kind === 'heal-flat'
       ? rule.healHP
       : Math.round((rule.healPct / 100) * maxHP);

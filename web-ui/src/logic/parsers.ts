@@ -1,4 +1,6 @@
 // src/logic/parsers.ts
+import { getMegaFormName } from './helpers';
+
 export type Dictionaries = {
     mySpecies: string[];
     enemySpecies: string[];
@@ -14,6 +16,15 @@ export type Dictionaries = {
     return Array.from(new Set(arr)).sort((a: any, b: any) =>
       String(a).localeCompare(String(b), undefined, { sensitivity: 'base' })
     );
+  }
+
+  function uniqueOrdered<T>(arr: T[]): T[] {
+    const seen = new Set<T>();
+    const result: T[] = [];
+    for (const s of arr) {
+      if (!seen.has(s)) { seen.add(s); result.push(s); }
+    }
+    return result;
   }
   
   function clean(s: string | undefined) {
@@ -99,7 +110,7 @@ function parseEnemyTrainer(text: string) {
         const bracket = line.slice(bracketIdx + 1, line.lastIndexOf(']') || line.length);
         const parts = bracket.split('|').map(clean);
         if (parts.length >= 2) {
-          ability = parts[1]; // Second part is ability
+          ability = parts[1];
         }
         line = clean(line.slice(0, bracketIdx));
       }
@@ -108,21 +119,24 @@ function parseEnemyTrainer(text: string) {
       const cutpoints = [lower.indexOf(' lv.'), line.indexOf('@'), line.indexOf(':')].filter(i => i !== -1);
       const firstCut = cutpoints.length ? Math.min(...cutpoints) : -1;
   
-      let speciesName = clean(firstCut === -1 ? line : line.slice(0, firstCut)).replace(/,\s*$/, '');
-      if (!speciesName) continue;
-      species.push(speciesName);
-      
-      if (ability) abilityBySpecies[speciesName] = ability;
-  
-      // item
+      let baseSpecies = clean(firstCut === -1 ? line : line.slice(0, firstCut)).replace(/,\s*$/, '');
+      if (!baseSpecies) continue;
+
+      // Parse item before deciding species display name
+      let item: string | undefined;
       const atIdx = line.indexOf('@');
       if (atIdx !== -1) {
         const after = line.slice(atIdx + 1);
         const stop = after.indexOf(':');
-        const item = clean(stop === -1 ? after : after.slice(0, stop));
-        if (item) itemBySpecies[speciesName] = item;
+        item = clean(stop === -1 ? after : after.slice(0, stop)) || undefined;
       }
-  
+
+      const speciesName = getMegaFormName(baseSpecies, item);
+      species.push(speciesName);
+
+      if (ability) abilityBySpecies[speciesName] = ability;
+      if (item) itemBySpecies[speciesName] = item;
+
       // moves
       const colonIdx = line.indexOf(':');
       if (colonIdx !== -1) {
@@ -134,7 +148,7 @@ function parseEnemyTrainer(text: string) {
       }
     }
   
-    return { species: uniqueSorted(species), movesBySpecies, itemBySpecies, abilityBySpecies };
+    return { species: uniqueOrdered(species), movesBySpecies, itemBySpecies, abilityBySpecies };
   }
   
   export function buildDictionaries(myText: string, enemyText: string): Dictionaries {

@@ -87,19 +87,46 @@ export default function TrainerSelector({ onSelect, selected }: Props) {
     return ` [${tags.join(', ')}]`;
   };
 
+  function selectByOffset(offset: number) {
+    if (trainers.length === 0) return;
+    const curIdx = selected ? trainers.findIndex(t => t.id === selected.id) : -1;
+    const nextIdx = curIdx === -1
+      ? (offset > 0 ? 0 : trainers.length - 1)
+      : (curIdx + offset + trainers.length) % trainers.length;
+    handleSelect(trainers[nextIdx]);
+  }
+
   return (
     <div ref={ref} className="relative w-full">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full text-left bg-neutral-800 border border-neutral-700 rounded-xl px-3 py-2 text-sm hover:bg-neutral-700 transition flex items-center justify-between"
-      >
-        <span className="truncate">
-          {selected
-            ? `${selected.name}${tagLabel(selected.tags)} — ${selected.area}`
-            : 'Select trainer...'}
-        </span>
-        <span className="text-neutral-500 ml-2">{open ? '▲' : '▼'}</span>
-      </button>
+      <div className="flex gap-1">
+        <button
+          onClick={() => selectByOffset(-1)}
+          disabled={trainers.length === 0}
+          className="shrink-0 w-8 h-9 flex items-center justify-center rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-400 hover:bg-neutral-700 hover:text-white disabled:opacity-30 transition text-sm"
+          title="Previous trainer"
+        >
+          ◀
+        </button>
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex-1 text-left bg-neutral-800 border border-neutral-700 rounded-xl px-3 py-2 text-sm hover:bg-neutral-700 transition flex items-center justify-between min-w-0"
+        >
+          <span className="truncate">
+            {selected
+              ? `${selected.name}${tagLabel(selected.tags)} — ${selected.area}`
+              : 'Select trainer...'}
+          </span>
+          <span className="text-neutral-500 ml-2">{open ? '▲' : '▼'}</span>
+        </button>
+        <button
+          onClick={() => selectByOffset(1)}
+          disabled={trainers.length === 0}
+          className="shrink-0 w-8 h-9 flex items-center justify-center rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-400 hover:bg-neutral-700 hover:text-white disabled:opacity-30 transition text-sm"
+          title="Next trainer"
+        >
+          ▶
+        </button>
+      </div>
 
       {open && (
         <div className="absolute z-30 top-full left-0 right-0 mt-1 bg-neutral-900 border border-neutral-700 rounded-xl shadow-2xl max-h-96 overflow-hidden flex flex-col">

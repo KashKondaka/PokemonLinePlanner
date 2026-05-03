@@ -7,8 +7,9 @@ import PokemonIcon from './components/PokemonIcon';
 import TeamEditor from './components/TeamEditor';
 import FlyoutPanel from './components/FlyoutPanel';
 import TrainerSelector, { type TrainerEntry } from './components/TrainerSelector';
-import TurnCard, { type Turn, type SubAction } from './components/TurnCard';
+import TurnCard, { type Turn, type SubAction, type EotSummaryData } from './components/TurnCard';
 import MatchupFinder from './components/MatchupFinder';
+import RiskReportModal from './components/RiskReportModal';
 
 import { buildDictionaries, type Dictionaries } from './logic/parsers';
 import { inferBerryRule, normalizeBerryName } from './logic/hpMath';
@@ -22,7 +23,7 @@ import {
   resolveCanonicalName,
   normalizeEnemyTrainerTextForBackend,
   uniqSortedWithZero,
-  fetchMaxHPFromAPI,
+  fetchPokemonStatsFromAPI,
 } from './logic/helpers';
 import {
   type WeatherState,
@@ -106,11 +107,17 @@ export default function App() {
 
     init.forEach(async (member, idx) => {
       if (member?.name) {
-        const maxHP = await fetchMaxHPFromAPI(member.name, myText, enemyText, gen);
-        if (typeof maxHP === 'number') {
+        const stats = await fetchPokemonStatsFromAPI(member.name, myText, enemyText, gen);
+        if (typeof stats.maxHP === 'number' || typeof stats.speed === 'number') {
           setEnemyTeam(prev => {
             const next = [...prev];
-            if (next[idx]) next[idx] = { ...next[idx]!, maxHP, curHP: maxHP };
+            if (next[idx]) {
+              next[idx] = {
+                ...next[idx]!,
+                ...(typeof stats.maxHP === 'number' ? { maxHP: stats.maxHP, curHP: stats.maxHP } : {}),
+                ...(typeof stats.speed === 'number' ? { speed: stats.speed } : {}),
+              };
+            }
             return next;
           });
         }
@@ -127,6 +134,8 @@ export default function App() {
   }
 
   async function addToMyTeam(slotIndex: number, species: string) {
+    const alreadyInSlot = myTeam.findIndex(m => m?.name?.toLowerCase() === species.toLowerCase());
+    if (alreadyInSlot !== -1 && alreadyInSlot !== slotIndex) return;
     const item = dicts.myItemBySpecies[species];
     const norm = normalizeBerryName(item);
     const rule = inferBerryRule(norm, gen);
@@ -140,17 +149,37 @@ export default function App() {
       };
       return next;
     });
-    const maxHP = await fetchMaxHPFromAPI(species, myText, enemyText, gen);
-    if (typeof maxHP === 'number') {
+    const stats = await fetchPokemonStatsFromAPI(species, myText, enemyText, gen);
+    if (typeof stats.maxHP === 'number' || typeof stats.speed === 'number') {
       setMyTeam(prev => {
         const next = [...prev];
-        if (next[slotIndex]?.name === species) next[slotIndex] = { ...next[slotIndex]!, maxHP, curHP: maxHP };
+        if (next[slotIndex]?.name === species) {
+          next[slotIndex] = {
+            ...next[slotIndex]!,
+            ...(typeof stats.maxHP === 'number' ? { maxHP: stats.maxHP, curHP: stats.maxHP } : {}),
+            ...(typeof stats.speed === 'number' ? { speed: stats.speed } : {}),
+          };
+        }
         return next;
       });
     }
   }
 
+  function resetAllRuns() {
+    if (!initialState) return;
+    setMyTeam(initialState.myTeam.map(cloneMember) as MemberEx[]);
+    setEnemyTeam(initialState.enemyTeam.map(cloneMember) as MemberEx[]);
+    setInitialState(null);
+    setActionLog([]);
+    setTurns(prev => prev.map(t => ({
+      ...t,
+      playerAction: { ...t.playerAction, runApplied: false, chosen: undefined },
+      enemyAction: { ...t.enemyAction, runApplied: false, chosen: undefined },
+    })));
+  }
+
   const onChangeStatus = (index: number, statusType: StatusType | undefined) => {
+    resetAllRuns();
     setMyTeam(prev => {
       const next = [...prev]; const cur = next[index]; if (!cur) return prev;
       next[index] = { ...cur, status: statusType ? { type: statusType } : undefined };
@@ -159,7 +188,28 @@ export default function App() {
   };
 
   const onChangeItem = (index: number, item: string | undefined) => {
+    resetAllRuns();
     setMyTeam(prev => {
+      const next = [...prev]; const cur = next[index]; if (!cur) return prev;
+      const norm = normalizeBerryName(item);
+      const rule = inferBerryRule(norm, gen);
+      next[index] = { ...cur, item, berry: rule ? { name: rule.name, consumed: false } : undefined };
+      return next;
+    });
+  };
+
+  const onChangeEnemyStatus = (index: number, statusType: StatusType | undefined) => {
+    resetAllRuns();
+    setEnemyTeam(prev => {
+      const next = [...prev]; const cur = next[index]; if (!cur) return prev;
+      next[index] = { ...cur, status: statusType ? { type: statusType } : undefined };
+      return next;
+    });
+  };
+
+  const onChangeEnemyItem = (index: number, item: string | undefined) => {
+    resetAllRuns();
+    setEnemyTeam(prev => {
       const next = [...prev]; const cur = next[index]; if (!cur) return prev;
       const norm = normalizeBerryName(item);
       const rule = inferBerryRule(norm, gen);
@@ -194,11 +244,110 @@ export default function App() {
     enemyAction: emptySubAction(),
   }]);
 
-  const addTurn = () => setTurns(p => [...p, {
-    id: p.length + 1,
-    playerAction: emptySubAction(),
-    enemyAction: emptySubAction(),
-  }]);
+  function addTurn() {
+    const prevTurn = turns[turns.length - 1];
+    if (!prevTurn) {
+      setTurns(p => [...p, { id: p.length + 1, playerAction: emptySubAction(), enemyAction: emptySubAction() }]);
+      return;
+    }
+
+    // Determine active Pokemon from the previous turn
+    let myActive: { name: string; source: 'my' | 'enemy' } | null = null;
+    let enemyActive: { name: string; source: 'my' | 'enemy' } | null = null;
+
+    const pa = prevTurn.playerAction;
+    const ea = prevTurn.enemyAction;
+
+    if (pa.type === 'switch' && pa.switchTo && pa.switchSource) {
+      if (pa.switchSource === 'my') myActive = { name: pa.switchTo, source: 'my' };
+      else enemyActive = { name: pa.switchTo, source: 'enemy' };
+    } else if (pa.attackerName && pa.attackerSource) {
+      if (pa.attackerSource === 'my') myActive = { name: pa.attackerName, source: 'my' };
+      else enemyActive = { name: pa.attackerName, source: 'enemy' };
+    }
+
+    if (ea.type === 'switch' && ea.switchTo && ea.switchSource) {
+      if (ea.switchSource === 'enemy') enemyActive = { name: ea.switchTo, source: 'enemy' };
+      else myActive = myActive || { name: ea.switchTo, source: 'my' };
+    } else if (ea.attackerName && ea.attackerSource) {
+      if (ea.attackerSource === 'enemy') enemyActive = enemyActive || { name: ea.attackerName, source: 'enemy' };
+      else myActive = myActive || { name: ea.attackerName, source: 'my' };
+    }
+
+    if (!enemyActive && pa.defenderName && pa.defenderSource === 'enemy') {
+      enemyActive = { name: pa.defenderName, source: 'enemy' };
+    }
+    if (!myActive && pa.defenderName && pa.defenderSource === 'my') {
+      myActive = { name: pa.defenderName, source: 'my' };
+    }
+    if (!myActive && ea.defenderName && ea.defenderSource === 'my') {
+      myActive = { name: ea.defenderName, source: 'my' };
+    }
+    if (!enemyActive && ea.defenderName && ea.defenderSource === 'enemy') {
+      enemyActive = { name: ea.defenderName, source: 'enemy' };
+    }
+
+    if (!myActive || !enemyActive) {
+      setTurns(p => [...p, { id: p.length + 1, playerAction: emptySubAction(), enemyAction: emptySubAction() }]);
+      return;
+    }
+
+    const effectiveSpeed = (member: MemberEx | undefined) => {
+      const base = member?.speed ?? 0;
+      const stage = member?.statStages?.spd ?? 0;
+      const s = Math.max(-6, Math.min(6, stage));
+      const multiplier = s >= 0 ? (2 + s) / 2 : 2 / (2 - s);
+      let spd = base * multiplier;
+      if (member?.status?.type === 'par') spd *= 0.5;
+      return spd;
+    };
+    const myMember = [...myTeam, ...enemyTeam].find(
+      m => m?.name?.toLowerCase() === myActive!.name.toLowerCase()
+    );
+    const enemyMember = [...myTeam, ...enemyTeam].find(
+      m => m?.name?.toLowerCase() === enemyActive!.name.toLowerCase()
+    );
+    const mySpeed = effectiveSpeed(myMember);
+    const enemySpeed = effectiveSpeed(enemyMember);
+
+    const myAlive = (myMember?.pct ?? 0) > 0;
+    const enemyAlive = (enemyMember?.pct ?? 0) > 0;
+
+    if (!myAlive || !enemyAlive) {
+      setTurns(p => [...p, { id: p.length + 1, playerAction: emptySubAction(), enemyAction: emptySubAction() }]);
+      return;
+    }
+
+    const faster = mySpeed >= enemySpeed ? myActive : enemyActive;
+    const slower = mySpeed >= enemySpeed ? enemyActive : myActive;
+
+    const row1: SubAction = {
+      type: 'attack',
+      attackerName: faster.name,
+      attackerSource: faster.source,
+      defenderName: slower.name,
+      defenderSource: slower.source,
+    };
+    const row2: SubAction = {
+      type: 'attack',
+      attackerName: slower.name,
+      attackerSource: slower.source,
+      defenderName: faster.name,
+      defenderSource: faster.source,
+    };
+
+    setTurns(p => [...p, { id: p.length + 1, playerAction: row1, enemyAction: row2 }]);
+
+    const newTurnIdx = turns.length;
+    if (faster.source === 'enemy') {
+      fetchAiProbs(newTurnIdx, 'player', faster.name, slower.name);
+    }
+    if (slower.source === 'enemy') {
+      fetchAiProbs(newTurnIdx, 'enemy', slower.name, faster.name);
+    }
+    fetchMoveDamageRanges(newTurnIdx, 'player', faster.name, slower.name);
+    fetchMoveDamageRanges(newTurnIdx, 'enemy', slower.name, faster.name);
+  }
 
   function findActivePlayerPokemon(turnIdx: number): string | null {
     for (let i = turnIdx; i >= 0; i--) {
@@ -208,78 +357,123 @@ export default function App() {
     return null;
   }
 
+  async function fetchAiProbs(turnIdx: number, side: 'player' | 'enemy', enemyName: string, playerName: string) {
+    try {
+      const enemyCanon = resolveCanonicalName(enemyName, dicts) ?? enemyName;
+      const playerCanon = resolveCanonicalName(playerName, dicts) ?? playerName;
+      const eMoves = dicts.movesBySpecies[enemyCanon] ?? dicts.movesBySpecies[enemyName] ?? [];
+      const pMoves = dicts.movesBySpecies[playerCanon] ?? dicts.movesBySpecies[playerName] ?? [];
+      if (eMoves.length === 0) return;
+
+      const resp = await fetch('/api/ai-move-dist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gen, myPokemon: playerCanon, enemyPokemon: enemyCanon,
+          myMoves: pMoves.slice(0, 4), enemyMoves: eMoves.slice(0, 4),
+          myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
+        }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.moveProbs) {
+        setTurns(p => p.map((t, i) => {
+          if (i !== turnIdx) return t;
+          const key = side === 'player' ? 'playerAction' : 'enemyAction';
+          return { ...t, [key]: { ...t[key], aiMoveProbs: data.moveProbs } };
+        }));
+      }
+    } catch { /* silently fail - AI probs are non-critical */ }
+  }
+
+  async function fetchMoveDamageRanges(turnIdx: number, side: 'player' | 'enemy', attackerName: string, defenderName: string) {
+    try {
+      const attackerCanon = resolveCanonicalName(attackerName, dicts) ?? attackerName;
+      const defenderCanon = resolveCanonicalName(defenderName, dicts) ?? defenderName;
+      const moves = getMovesForPokemon(attackerCanon).slice(0, 4);
+      if (moves.length === 0) return;
+
+      const enemyTextForBackend = normalizeEnemyTrainerTextForBackend(enemyText);
+      const resp = await fetch('/api/calc-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gen, myText, enemyText: enemyTextForBackend,
+          attacker: attackerCanon, defender: defenderCanon,
+          moves,
+        }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.results) {
+        setTurns(p => p.map((t, i) => {
+          if (i !== turnIdx) return t;
+          const key = side === 'player' ? 'playerAction' : 'enemyAction';
+          return { ...t, [key]: { ...t[key], moveDamageRanges: data.results } };
+        }));
+      }
+    } catch { /* non-critical */ }
+  }
+
   function updateSubAction(turnIdx: number, side: 'player' | 'enemy', update: Partial<SubAction>) {
     setTurns(prev => prev.map((t, i) => {
       if (i !== turnIdx) return t;
       const key = side === 'player' ? 'playerAction' : 'enemyAction';
-      const updated = { ...t[key], ...update };
+      const prev_action = t[key];
+      const updated = { ...prev_action, ...update };
+
+      const attackerChanged = updated.attackerName !== prev_action.attackerName;
+      const defenderChanged = updated.defenderName !== prev_action.defenderName;
+
+      if (attackerChanged || defenderChanged) {
+        updated.moveDamageRanges = undefined;
+      }
 
       // Trigger AI probability fetch when enemy is attacker and both pokemon are placed
       if (updated.attackerSource === 'enemy' && updated.attackerName && updated.defenderName) {
-        fetchAiProbs(updated.attackerName, updated.defenderName);
+        fetchAiProbs(turnIdx, side, updated.attackerName, updated.defenderName);
       }
 
-      // Trigger switch-in score fetch when enemy action toggles to switch
-      if (side === 'enemy' && updated.type === 'switch' && t[key].type !== 'switch') {
-        fetchSwitchScores(turnIdx);
+      // Trigger damage preview for all moves when both attacker and defender are placed
+      if (updated.attackerName && updated.defenderName && !updated.moveDamageRanges) {
+        fetchMoveDamageRanges(turnIdx, side, updated.attackerName, updated.defenderName);
+      }
+
+      // Trigger switch-in score recalc when enemy toggles to switch, or
+      // when the player side changes attacker while enemy is already in switch mode
+      const enemyAction = side === 'enemy' ? updated : t.enemyAction;
+      const playerAction = side === 'player' ? updated : t.playerAction;
+      const enemyJustToggled = side === 'enemy' && updated.type === 'switch' && prev_action.type !== 'switch';
+      const playerAttackerChanged = side === 'player' && attackerChanged && enemyAction.type === 'switch';
+      if (enemyJustToggled || playerAttackerChanged) {
+        const playerPoke = playerAction.attackerSource === 'my' ? playerAction.attackerName : null;
+        if (playerPoke) fetchSwitchScores(turnIdx, playerPoke);
       }
 
       return { ...t, [key]: updated };
     }));
+  }
 
-    async function fetchSwitchScores(tidx: number) {
-      const playerPokemon = findActivePlayerPokemon(tidx);
-      if (!playerPokemon) return;
-      const playerCanon = resolveCanonicalName(playerPokemon, dicts) ?? playerPokemon;
-
-      try {
-        const resp = await fetch('/api/switch-scores', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            gen, playerPokemon: playerCanon,
-            myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
-          }),
-        });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.scores) {
-          setTurns(p => p.map((t, i) => {
-            if (i !== tidx) return t;
-            return { ...t, enemyAction: { ...t.enemyAction, switchScores: data.scores } };
-          }));
-        }
-      } catch { /* non-critical */ }
-    }
-
-    async function fetchAiProbs(enemyName: string, playerName: string) {
-      try {
-        const enemyCanon = resolveCanonicalName(enemyName, dicts) ?? enemyName;
-        const playerCanon = resolveCanonicalName(playerName, dicts) ?? playerName;
-        const eMoves = dicts.movesBySpecies[enemyCanon] ?? dicts.movesBySpecies[enemyName] ?? [];
-        const pMoves = dicts.movesBySpecies[playerCanon] ?? dicts.movesBySpecies[playerName] ?? [];
-        if (eMoves.length === 0) return;
-
-        const resp = await fetch('/api/ai-move-dist', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            gen, myPokemon: playerCanon, enemyPokemon: enemyCanon,
-            myMoves: pMoves.slice(0, 4), enemyMoves: eMoves.slice(0, 4),
-            myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
-          }),
-        });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.moveProbs) {
-          setTurns(p => p.map((t, i) => {
-            if (i !== turnIdx) return t;
-            const key = side === 'player' ? 'playerAction' : 'enemyAction';
-            return { ...t, [key]: { ...t[key], aiMoveProbs: data.moveProbs } };
-          }));
-        }
-      } catch { /* silently fail - AI probs are non-critical */ }
-    }
+  async function fetchSwitchScores(tidx: number, playerPokemon: string) {
+    const playerCanon = resolveCanonicalName(playerPokemon, dicts) ?? playerPokemon;
+    try {
+      const resp = await fetch('/api/switch-scores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gen, playerPokemon: playerCanon,
+          myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
+        }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.scores) {
+        setTurns(p => p.map((t, i) => {
+          if (i !== tidx) return t;
+          return { ...t, enemyAction: { ...t.enemyAction, switchScores: data.scores } };
+        }));
+      }
+    } catch { /* non-critical */ }
   }
 
   function getMovesForPokemon(name: string | undefined): string[] {
@@ -367,7 +561,11 @@ export default function App() {
 
         updateSubAction(turnIdx, side, {
           loading: false, error: null,
-          result: { defender: defenderCanon, lowPct: 0, highPct: 0, critPct: 0, isStatChange: true, statChanges: [], target: attackerCanon },
+          result: {
+            defender: defenderCanon, lowPct: 0, highPct: 0, critPct: 0,
+            isStatChange: true, statChanges: [], target: attackerCanon,
+            screenSetUp: { type: screenType, turnsRemaining: SCREEN_DURATION, user: attackerCanon },
+          },
           runApplied: false, chosen: undefined,
         });
         setTurns(prev => prev.map((t, i) => i === turnIdx ? { ...t, weather: currentWeather, myScreens, enemyScreens } : t));
@@ -476,6 +674,27 @@ export default function App() {
   function runSubAction(turnIdx: number, side: 'player' | 'enemy') {
     const turn = turns[turnIdx];
     const action = side === 'player' ? turn.playerAction : turn.enemyAction;
+
+    // Handle switch actions: mark as applied, then check EOT
+    if (action.type === 'switch') {
+      if (action.runApplied || !action.switchTo) return;
+      updateSubAction(turnIdx, side, { runApplied: true });
+      const otherSide = side === 'player' ? 'enemy' : 'player';
+      const otherAction = otherSide === 'player' ? turn.playerAction : turn.enemyAction;
+      if (otherAction.runApplied) {
+        if (!initialState) {
+          setInitialState({ myTeam: baseMyTeam.map(cloneMember), enemyTeam: baseEnemyTeam.map(cloneMember) });
+        }
+        const effectiveInitial = initialState ?? {
+          myTeam: baseMyTeam.map(cloneMember),
+          enemyTeam: baseEnemyTeam.map(cloneMember),
+        };
+        const postState = replayAll(effectiveInitial, actionLog);
+        handleEndOfTurnEffects(turnIdx, turn, postState);
+      }
+      return;
+    }
+
     if (!action.result || action.runApplied) return;
 
     const attackerName = action.attackerName ?? '';
@@ -524,7 +743,7 @@ export default function App() {
       setActionLog(prev => [...prev, ga]);
       updateSubAction(turnIdx, side, {
         runApplied: true,
-        chosen: { attacker: attackerName, move: moveName, defender: targetCanon, finalPct: loc.member?.pct ?? 100, isStatChange: true, statChanges: action.result!.statChanges },
+        chosen: { attacker: attackerName, move: moveName, defender: targetCanon, finalPct: loc.member?.pct ?? 100, isStatChange: true, statChanges: action.result!.statChanges, screenSetUp: action.result!.screenSetUp },
       });
     } else if (action.result.isStatusMove && action.result.statusEffect && action.result.target) {
       const targetCanon = resolveCanonicalName(action.result.target, dicts) ?? action.result.target;
@@ -579,26 +798,33 @@ export default function App() {
           finalPct: effects.finalPct, finalHP: effects.finalHP, maxHP: effects.maxHP,
           berryUsedName: effects.berryUsedName,
           eotType: effects.eotType, eotLossPct: effects.eotLossPct,
+          weatherLossPct: effects.weatherLossPct,
         },
       });
     }
 
-    // --- End-of-turn Leftovers check ---
+    // --- End-of-turn check ---
     if (!builtAction) return;
     const otherSide = side === 'player' ? 'enemy' : 'player';
     const otherAction = otherSide === 'player' ? turn.playerAction : turn.enemyAction;
     if (!otherAction.runApplied) return;
 
-    const playerAct = turn.playerAction;
-    const enemyAct = turn.enemyAction;
-    const playerActiveName = playerAct.type === 'switch' ? playerAct.switchTo : playerAct.attackerName;
-    const enemyActiveName = enemyAct.type === 'switch' ? enemyAct.switchTo : enemyAct.attackerName;
-
+    if (!initialState) {
+      setInitialState({ myTeam: baseMyTeam.map(cloneMember), enemyTeam: baseEnemyTeam.map(cloneMember) });
+    }
     const effectiveInitial = initialState ?? {
       myTeam: baseMyTeam.map(cloneMember),
       enemyTeam: baseEnemyTeam.map(cloneMember),
     };
     const postState = replayAll(effectiveInitial, [...actionLog, builtAction]);
+    handleEndOfTurnEffects(turnIdx, turn, postState);
+  }
+
+  function handleEndOfTurnEffects(turnIdx: number, turn: Turn, postState: GameState) {
+    const playerAct = turn.playerAction;
+    const enemyAct = turn.enemyAction;
+    const playerActiveName = playerAct.type === 'switch' ? playerAct.switchTo : playerAct.attackerName;
+    const enemyActiveName = enemyAct.type === 'switch' ? enemyAct.switchTo : enemyAct.attackerName;
 
     const eotEffects: EndOfTurnEffect[] = [];
     for (const [activeName, sideLabel] of [[playerActiveName, 'player'], [enemyActiveName, 'enemy']] as const) {
@@ -643,6 +869,83 @@ export default function App() {
       };
       setActionLog(prev => [...prev, eotAction]);
     }
+
+    fetchNextTurnAiSuggestion(turnIdx, turn, postState);
+  }
+
+  async function fetchNextTurnAiSuggestion(turnIdx: number, turn: Turn, postState: GameState) {
+    const playerAct = turn.playerAction;
+    const enemyAct = turn.enemyAction;
+
+    let myActiveName: string | undefined;
+    let enemyActiveName: string | undefined;
+
+    if (playerAct.attackerSource === 'my') {
+      myActiveName = playerAct.attackerName;
+      enemyActiveName = playerAct.defenderName;
+    } else if (playerAct.attackerSource === 'enemy') {
+      enemyActiveName = playerAct.attackerName;
+      myActiveName = playerAct.defenderName;
+    }
+    if (enemyAct.attackerSource === 'enemy') {
+      enemyActiveName = enemyActiveName || enemyAct.attackerName;
+      myActiveName = myActiveName || enemyAct.defenderName;
+    } else if (enemyAct.attackerSource === 'my') {
+      myActiveName = myActiveName || enemyAct.attackerName;
+      enemyActiveName = enemyActiveName || enemyAct.defenderName;
+    }
+    if (playerAct.type === 'switch' && playerAct.switchTo) myActiveName = playerAct.switchTo;
+    if (enemyAct.type === 'switch' && enemyAct.switchTo) enemyActiveName = enemyAct.switchTo;
+
+    if (!myActiveName || !enemyActiveName) return;
+
+    const myCanon = resolveCanonicalName(myActiveName, dicts) ?? myActiveName;
+    const enemyCanon = resolveCanonicalName(enemyActiveName, dicts) ?? enemyActiveName;
+    const eMoves = dicts.movesBySpecies[enemyCanon] ?? dicts.movesBySpecies[enemyActiveName] ?? [];
+    const pMoves = dicts.movesBySpecies[myCanon] ?? dicts.movesBySpecies[myActiveName] ?? [];
+    if (eMoves.length === 0) return;
+
+    // Use postState for accurate post-attack HP (React state may not have updated yet)
+    const myMemberPost = [...postState.myTeam, ...postState.enemyTeam].find(
+      m => m?.name?.toLowerCase() === myCanon.toLowerCase()
+    );
+    const enemyMemberPost = [...postState.myTeam, ...postState.enemyTeam].find(
+      m => m?.name?.toLowerCase() === enemyCanon.toLowerCase()
+    );
+    const playerHPPct = myMemberPost?.pct ?? 100;
+    const enemyHPPct = enemyMemberPost?.pct ?? 100;
+
+    try {
+      const resp = await fetch('/api/ai-move-dist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          gen, myPokemon: myCanon, enemyPokemon: enemyCanon,
+          myMoves: pMoves.slice(0, 4), enemyMoves: eMoves.slice(0, 4),
+          myText, enemyText: normalizeEnemyTrainerTextForBackend(enemyText),
+          playerHPPct, enemyHPPct,
+        }),
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.moveProbs && data.moveNames) {
+        const probs: number[] = data.moveProbs;
+        const names: string[] = data.moveNames;
+        let bestIdx = 0;
+        for (let i = 1; i < probs.length; i++) {
+          if (probs[i] > probs[bestIdx]) bestIdx = i;
+        }
+        const summary: EotSummaryData = {
+          nextAiMove: names[bestIdx] || undefined,
+          nextAiProb: probs[bestIdx] ?? undefined,
+          nextAiMoveProbs: probs,
+          nextAiMoveNames: names,
+          nextAiTarget: myCanon,
+          nextAiTargetPct: playerHPPct,
+        };
+        setTurns(prev => prev.map((t, i) => i === turnIdx ? { ...t, eotSummary: summary } : t));
+      }
+    } catch { /* non-critical */ }
   }
 
   function undoSubAction(turnIdx: number, side: 'player' | 'enemy') {
@@ -663,19 +966,20 @@ export default function App() {
 
     updateSubAction(turnIdx, side, { runApplied: false, chosen: undefined });
 
-    // Clear Leftovers notes from the other side's chosen too
-    const otherSide: 'player' | 'enemy' = side === 'player' ? 'enemy' : 'player';
-    const otherKey = otherSide === 'player' ? 'playerAction' : 'enemyAction';
-    const otherChosen = turn[otherKey].chosen;
-    if (otherChosen?.leftoversHealHP) {
-      setTurns(prev => prev.map((t, i) => {
-        if (i !== turnIdx) return t;
+    // Clear EOT summary and leftovers notes from the other side's chosen
+    setTurns(prev => prev.map((t, i) => {
+      if (i !== turnIdx) return t;
+      let updated = { ...t, eotSummary: undefined };
+      const otherSide: 'player' | 'enemy' = side === 'player' ? 'enemy' : 'player';
+      const otherKey = otherSide === 'player' ? 'playerAction' : 'enemyAction';
+      const otherChosen = t[otherKey].chosen;
+      if (otherChosen?.leftoversHealHP) {
         const act = t[otherKey];
-        if (!act.chosen) return t;
         const { leftoversHealHP, leftoversTarget, ...cleanChosen } = act.chosen as any;
-        return { ...t, [otherKey]: { ...act, chosen: cleanChosen } };
-      }));
-    }
+        updated = { ...updated, [otherKey]: { ...act, chosen: cleanChosen } };
+      }
+      return updated;
+    }));
   }
 
   function deleteTurn(i: number) {
@@ -794,6 +1098,114 @@ export default function App() {
 
   const importFileRef = React.useRef<HTMLInputElement>(null);
 
+  // --- Risk Analysis ---
+  const [riskReport, setRiskReport] = useState<any>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+
+  async function analyzeRisk() {
+    const calcdTurns = turns.filter(t =>
+      (t.playerAction.runApplied || t.enemyAction.runApplied)
+    );
+    if (calcdTurns.length === 0) return;
+
+    setRiskLoading(true);
+    try {
+      const effectiveInitial = initialState ?? {
+        myTeam: baseMyTeam.map(cloneMember),
+        enemyTeam: baseEnemyTeam.map(cloneMember),
+      };
+
+      let runningState = { ...effectiveInitial, myTeam: [...effectiveInitial.myTeam], enemyTeam: [...effectiveInitial.enemyTeam] };
+
+      const turnInputs = turns.map((turn, idx) => {
+        const pa = turn.playerAction;
+        const ea = turn.enemyAction;
+
+        const myDefenderName = ea.type === 'attack' ? ea.defenderName : undefined;
+        const myDefCanon = myDefenderName ? (resolveCanonicalName(myDefenderName, dicts) ?? myDefenderName) : undefined;
+
+        let myPokemonHP = 0;
+        let myPokemonMaxHP = 0;
+        let myPokemonStatus: string | undefined;
+
+        if (myDefCanon) {
+          const m = [...runningState.myTeam, ...runningState.enemyTeam].find(
+            mem => mem?.name?.toLowerCase() === myDefCanon.toLowerCase()
+          );
+          if (m) {
+            myPokemonMaxHP = m.maxHP ?? 0;
+            myPokemonHP = typeof m.curHP === 'number' ? m.curHP : Math.round(((m.pct ?? 100) / 100) * myPokemonMaxHP);
+            myPokemonStatus = m.status?.type;
+          }
+        }
+
+        const effectiveSpeed = (member: MemberEx | undefined) => {
+          const base = (member as any)?.speed ?? 0;
+          const stage = member?.statStages?.spd ?? 0;
+          const s = Math.max(-6, Math.min(6, stage));
+          const multiplier = s >= 0 ? (2 + s) / 2 : 2 / (2 - s);
+          let spd = base * multiplier;
+          if (member?.status?.type === 'par') spd *= 0.5;
+          return spd;
+        };
+
+        const enemyAttacker = ea.attackerName ? [...runningState.myTeam, ...runningState.enemyTeam].find(
+          m => m?.name?.toLowerCase() === ea.attackerName!.toLowerCase()
+        ) : undefined;
+        const myDefender = myDefCanon ? [...runningState.myTeam, ...runningState.enemyTeam].find(
+          m => m?.name?.toLowerCase() === myDefCanon.toLowerCase()
+        ) : undefined;
+
+        const enemyMovesFirst = effectiveSpeed(enemyAttacker) > effectiveSpeed(myDefender);
+
+        // Advance running state with this turn's actions
+        const turnActions = actionLog.filter(a => a.actionKey?.startsWith(`turn-${turn.id}-`));
+        for (const act of turnActions) {
+          runningState = replayAll(effectiveInitial, actionLog.slice(0, actionLog.indexOf(act) + 1)) as any;
+        }
+
+        return {
+          turnNumber: idx + 1,
+          playerAction: {
+            type: pa.type,
+            moveName: pa.moveName,
+            attackerName: pa.attackerName,
+            defenderName: pa.defenderName,
+          },
+          enemyAction: {
+            type: ea.type,
+            moveName: ea.moveName,
+            attackerName: ea.attackerName,
+            defenderName: ea.defenderName,
+            rawRollsNormal: ea.result?.rawRollsNormal,
+            rawRollsCrit: ea.result?.rawRollsCrit,
+          },
+          myPokemonHP,
+          myPokemonMaxHP,
+          myPokemonStatus,
+          enemyMovesFirst,
+        };
+      });
+
+      const resp = await fetch('/api/risk-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gen, turns: turnInputs }),
+      });
+
+      if (!resp.ok) throw new Error(await resp.text());
+      const report = await resp.json();
+      setRiskReport(report);
+    } catch (err: any) {
+      console.error('[risk-analysis]', err);
+      alert(`Risk analysis failed: ${err?.message || err}`);
+    } finally {
+      setRiskLoading(false);
+    }
+  }
+
+  const hasAnyCalc = turns.some(t => t.playerAction.result || t.enemyAction.result);
+
   const myCollection = dicts.mySpecies;
 
   return (
@@ -884,6 +1296,7 @@ export default function App() {
                         if (img) e.dataTransfer.setDragImage(img, 16, 16);
                       }}
                       onClick={() => {
+                        if (myTeam.some(m => m?.name?.toLowerCase() === name.toLowerCase())) return;
                         const emptyIdx = myTeam.findIndex(m => !m?.name);
                         if (emptyIdx !== -1) addToMyTeam(emptyIdx, name);
                       }}
@@ -937,14 +1350,20 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <TeamBox title="Enemy Team" members={enemyTeam} />
+                <TeamBox
+                  title="Enemy Team"
+                  members={enemyTeam}
+                  editable
+                  onChangeStatus={onChangeEnemyStatus}
+                  onChangeItem={onChangeEnemyItem}
+                />
               </div>
             </FlyoutPanel>
 
             {/* Main turn area */}
             <div className="ml-7 mr-7">
               {/* Top bar: gen, battle mode, controls */}
-              <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div className="flex items-center justify-between mb-4 flex-wrap gap-2 sticky top-0 z-10 bg-neutral-950 py-2">
                 <div className="flex items-center gap-3">
                   <select value={gen} onChange={e => setGen(Number(e.target.value))} className="bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-1.5 text-sm">
                     {[9,8,7,6,5,4,3,2,1].map(g => <option key={g} value={g}>Gen {g}</option>)}
@@ -967,6 +1386,17 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button onClick={addTurn} className="rounded-lg px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 transition text-sm font-semibold shadow">
                     + Add Turn
+                  </button>
+                  <button
+                    onClick={analyzeRisk}
+                    disabled={!hasAnyCalc || riskLoading}
+                    className={`rounded-lg px-3 py-1.5 transition text-sm font-semibold shadow ${
+                      hasAnyCalc && !riskLoading
+                        ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                        : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
+                    }`}
+                  >
+                    {riskLoading ? 'Analyzing...' : 'Analyze Risk'}
                   </button>
                   <button onClick={exportLines} className="rounded-lg px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 transition text-sm font-semibold shadow">
                     Export
@@ -1078,6 +1508,10 @@ export default function App() {
           <p>Drag Pokemon from the left (My Team) or right (Enemy Team) flyouts into turn slots. Select a move, place a target, then Calc and Run.</p>
         </footer>
       </div>
+
+      {riskReport && (
+        <RiskReportModal report={riskReport} onClose={() => setRiskReport(null)} />
+      )}
     </div>
   );
 }

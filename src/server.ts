@@ -6,7 +6,8 @@ import path from 'path';
 import { damageSummary } from './damage';
 import { parseShowdownTeamsFile, parseEnemyCompactLines } from './parser';
 import { SimpleSet, EnrichedPokemon, MoveInfo, StatBlock } from './types';
-import { Generations, Pokemon, Move, Field, GenerationNum, calculate, ITEMS } from '@smogon/calc';
+import { Generations, Pokemon, Move, Field, GenerationNum, calculate, ITEMS, MEGA_STONES } from '@smogon/calc';
+import { analyzeRisk, RiskAnalysisInput } from './riskAnalysis';
 
 // Stat-changing moves database
 type StatChange = {
@@ -373,6 +374,7 @@ app.post('/api/calc', (req, res) => {
         ivs: (pD as any).ivs,
         evs: (pD as any).evs,
         maxHP: pD.maxHP(),
+        speed: pD.rawStats?.spe ?? (pD as any).stats?.spe ?? 0,
       },
       move: {
         name: mv.name,
@@ -399,6 +401,56 @@ app.post('/api/calc', (req, res) => {
     res.json(payload);
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'calc failed' });
+  }
+});
+
+app.post('/api/calc-preview', (req, res) => {
+  try {
+    const {
+      gen = 9,
+      myText = '',
+      enemyText = '',
+      attacker,
+      defender,
+      moves,
+    } = req.body || {};
+
+    if (!attacker || !defender || !Array.isArray(moves) || moves.length === 0) {
+      return res.status(400).json({ error: 'attacker, defender, moves[] are required' });
+    }
+
+    const mySets = parseShowdownTeamsFile(String(myText)).map(normalizeNoEVs);
+    const enemySets = parseEnemyCompactLines(String(enemyText)).map(normalizeNoEVs);
+    const lookup = buildLookup([...mySets, ...enemySets]);
+
+    const A0 = lookup[key(String(attacker))];
+    const D0 = lookup[key(String(defender))];
+    if (!A0 || !D0) {
+      return res.status(404).json({ error: `Unknown pokemon` });
+    }
+
+    const A: SimpleSet = { ...A0 };
+    const D: SimpleSet = { ...D0 };
+
+    const results: Record<string, { minPct: number; maxPct: number } | null> = {};
+
+    for (const moveName of moves) {
+      const mv = String(moveName);
+      if (getStatChangingMove(mv) || getStatusMove(mv)) {
+        results[mv] = null;
+        continue;
+      }
+      try {
+        const sum = damageSummary(Number(gen), A, D, mv);
+        results[mv] = { minPct: Math.round(sum.minPct), maxPct: Math.round(sum.maxPct) };
+      } catch {
+        results[mv] = null;
+      }
+    }
+
+    res.json({ results });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'calc-preview failed' });
   }
 });
 
@@ -792,6 +844,7 @@ app.post('/api/ai-move-dist', (req, res) => {
       myMoves, enemyMoves,
       myText = '', enemyText = '',
       aiOptions = {},
+      playerHPPct, enemyHPPct,
     } = req.body || {};
 
     if (!myPokemon || !enemyPokemon || !enemyMoves || !myMoves) {
@@ -839,6 +892,17 @@ app.post('/api/ai-move-dist', (req, res) => {
 
     const playerPoke = toSylPokemon(mySet);
     const enemyPoke = toSylPokemon(enemySet);
+
+    // Apply HP overrides: convert percentage to absolute HP
+    if (typeof playerHPPct === 'number' && playerHPPct < 100) {
+      const maxHP = playerPoke.rawStats?.hp ?? playerPoke.stats?.hp ?? 0;
+      if (maxHP > 0) playerPoke.curHP = Math.max(1, Math.round((playerHPPct / 100) * maxHP));
+    }
+    if (typeof enemyHPPct === 'number' && enemyHPPct < 100) {
+      const maxHP = enemyPoke.rawStats?.hp ?? enemyPoke.stats?.hp ?? 0;
+      if (maxHP > 0) enemyPoke.curHP = Math.max(1, Math.round((enemyHPPct / 100) * maxHP));
+    }
+
     const field = new SylCalc.Field({});
 
     const playerResults: any[] = [];
@@ -1025,8 +1089,13 @@ function computeSwitchScore(
   candidateSet: SimpleSet,
   playerSet: SimpleSet,
 ): number {
+  // Strip mega stone so switch-in AI evaluates base-form stats
+  const effectiveSet = (candidateSet.item && (MEGA_STONES as any)[candidateSet.item])
+    ? { ...candidateSet, item: undefined }
+    : candidateSet;
+
   const g = Generations.get(genNum as GenerationNum);
-  const candidatePoke = toCalcPokemon(g, candidateSet);
+  const candidatePoke = toCalcPokemon(g, effectiveSet);
   const playerPoke = toCalcPokemon(g, playerSet);
 
   const candidateSpeed = candidatePoke.rawStats.spe;
@@ -1034,10 +1103,10 @@ function computeSwitchScore(
   const isFaster = candidateSpeed >= playerSpeed;
 
   let bestCandidateDmgPct = 0;
-  for (const moveName of candidateSet.moves) {
+  for (const moveName of effectiveSet.moves) {
     if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
     try {
-      const sum = damageSummary(genNum, candidateSet, playerSet, moveName);
+      const sum = damageSummary(genNum, effectiveSet, playerSet, moveName);
       if (sum.maxPct > bestCandidateDmgPct) bestCandidateDmgPct = sum.maxPct;
     } catch { /* skip */ }
   }
@@ -1046,7 +1115,7 @@ function computeSwitchScore(
   for (const moveName of playerSet.moves) {
     if (getStatChangingMove(moveName) || getStatusMove(moveName)) continue;
     try {
-      const sum = damageSummary(genNum, playerSet, candidateSet, moveName);
+      const sum = damageSummary(genNum, playerSet, effectiveSet, moveName);
       if (sum.maxPct > bestPlayerDmgPct) bestPlayerDmgPct = sum.maxPct;
     } catch { /* skip */ }
   }
@@ -1122,6 +1191,50 @@ app.post('/api/switch-scores', (req, res) => {
   } catch (e: any) {
     console.error('[switch-scores] Error:', e);
     res.status(500).json({ error: e?.message || 'switch-scores failed' });
+  }
+});
+
+// --- Risk Analysis ---
+
+app.post('/api/risk-analysis', (req, res) => {
+  try {
+    const { gen = 4, turns } = req.body || {};
+
+    if (!turns || !Array.isArray(turns) || turns.length === 0) {
+      return res.status(400).json({ error: 'turns array is required and must not be empty' });
+    }
+
+    const input: RiskAnalysisInput = {
+      gen: Number(gen),
+      turns: turns.map((t: any) => ({
+        turnNumber: t.turnNumber ?? 1,
+        playerAction: {
+          type: t.playerAction?.type ?? 'attack',
+          moveName: t.playerAction?.moveName,
+          attackerName: t.playerAction?.attackerName,
+          defenderName: t.playerAction?.defenderName,
+        },
+        enemyAction: {
+          type: t.enemyAction?.type ?? 'attack',
+          moveName: t.enemyAction?.moveName,
+          attackerName: t.enemyAction?.attackerName,
+          defenderName: t.enemyAction?.defenderName,
+          rawRollsNormal: t.enemyAction?.rawRollsNormal,
+          rawRollsCrit: t.enemyAction?.rawRollsCrit,
+        },
+        myPokemonHP: t.myPokemonHP ?? 0,
+        myPokemonMaxHP: t.myPokemonMaxHP ?? 0,
+        myPokemonStatus: t.myPokemonStatus,
+        enemyMovesFirst: t.enemyMovesFirst ?? false,
+      })),
+    };
+
+    const report = analyzeRisk(input);
+    console.log('[risk-analysis]', `${input.turns.length} turns → ${(report.overallSuccessProbability * 100).toFixed(1)}% success`);
+    res.json(report);
+  } catch (e: any) {
+    console.error('[risk-analysis] Error:', e);
+    res.status(500).json({ error: e?.message || 'risk analysis failed' });
   }
 });
 

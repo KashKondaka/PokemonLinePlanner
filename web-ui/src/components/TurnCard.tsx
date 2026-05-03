@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import SpriteDropZone from './SpriteDropZone';
 import MoveButtonGrid from './MoveButtonGrid';
 import RollSlider from './RollSlider';
@@ -29,6 +29,7 @@ export type SubAction = {
     isStatChange?: boolean;
     statChanges?: { stat: string; stages: number; target: string }[];
     target?: string;
+    screenSetUp?: { type: string; turnsRemaining: number; user: string };
     isStatusMove?: boolean;
     statusEffect?: string;
     berryCured?: boolean;
@@ -46,6 +47,8 @@ export type SubAction = {
   attackerFirstTurnOut?: boolean;
   defenderFirstTurnOut?: boolean;
 
+  moveDamageRanges?: Record<string, { minPct: number; maxPct: number } | null>;
+
   switchScores?: { species: string; score: number; isBest: boolean }[];
 
   chosen?: {
@@ -58,15 +61,26 @@ export type SubAction = {
     berryUsedName?: string;
     eotType?: string;
     eotLossPct?: number;
+    weatherLossPct?: number;
     leftoversHealHP?: number;
     leftoversTarget?: string;
     isStatChange?: boolean;
     statChanges?: Array<{ stat: string; stages: number; target: string }>;
+    screenSetUp?: { type: string; turnsRemaining: number; user: string };
     isStatusMove?: boolean;
     statusEffect?: string;
     statusCured?: boolean;
     intimidateUsed?: Array<{ user: string; target: string; effect: string }>;
   };
+};
+
+export type EotSummaryData = {
+  nextAiMove?: string;
+  nextAiProb?: number;
+  nextAiMoveProbs?: number[];
+  nextAiMoveNames?: string[];
+  nextAiTarget?: string;
+  nextAiTargetPct?: number;
 };
 
 export type Turn = {
@@ -76,6 +90,7 @@ export type Turn = {
   weather?: any;
   myScreens?: any[];
   enemyScreens?: any[];
+  eotSummary?: EotSummaryData;
 };
 
 type MemberLookup = {
@@ -147,17 +162,12 @@ function SubActionRow({
   const resultMsg = action.result?.isStatChange
     ? (action.result.statChanges?.length
         ? action.result.statChanges.map(sc => `${sc.target} ${sc.stat} ${sc.stages > 0 ? '+' : ''}${sc.stages}`).join(', ')
-        : 'Screen set up!')
+        : action.result.screenSetUp
+          ? `${action.result.screenSetUp.type.replace('-', ' ')} (${action.result.screenSetUp.turnsRemaining} turns)`
+          : null)
     : action.result?.isStatusMove
       ? `${action.result.target} was ${action.result.statusEffect}${action.result.berryCured ? ' (cured)' : ''}!`
       : null;
-
-  const notes: string[] = [];
-  if (action.runApplied && action.chosen) {
-    if (action.chosen.berryUsedName) notes.push(`${action.chosen.berryUsedName} Berry consumed`);
-    if (action.chosen.eotType && action.chosen.eotLossPct) notes.push(`${action.chosen.eotType} -${action.chosen.eotLossPct}%`);
-    if (action.chosen.leftoversHealHP && action.chosen.leftoversTarget) notes.push(`${action.chosen.leftoversTarget} healed ${action.chosen.leftoversHealHP} HP with Leftovers`);
-  }
 
   return (
     <div>
@@ -218,6 +228,7 @@ function SubActionRow({
             selectedMove={action.moveName}
             onSelectMove={onSelectMove}
             aiMoveProbs={action.aiMoveProbs}
+            moveDamageRanges={action.moveDamageRanges}
             disabled={!action.attackerName || !!action.runApplied}
           />
 
@@ -304,11 +315,96 @@ function SubActionRow({
         </>
       )}
     </div>
-    {notes.length > 0 && (
-      <div className="ml-14 text-[9px] text-amber-400 leading-tight">
-        {notes.map((n, i) => <div key={i}>{n}</div>)}
-      </div>
-    )}
+    </div>
+  );
+}
+
+type EotEntry = {
+  key: string;
+  icon: string;
+  label: string;
+};
+
+function buildEotEntries(turn: Turn): EotEntry[] {
+  const entries: EotEntry[] = [];
+  for (const [sideKey, action] of [['P', turn.playerAction], ['E', turn.enemyAction]] as const) {
+    const c = action.chosen;
+    if (!c) continue;
+    if (c.berryUsedName) {
+      entries.push({ key: `${sideKey}-berry`, icon: '🫐', label: `${c.defender} consumed ${c.berryUsedName}` });
+    }
+    if (c.eotType && c.eotLossPct) {
+      const typeLabel = c.eotType === 'burn' ? 'burn' : 'poison';
+      entries.push({ key: `${sideKey}-status`, icon: c.eotType === 'burn' ? '🔥' : '☠️', label: `${c.defender} took ${Math.round(c.eotLossPct)}% ${typeLabel} damage` });
+    }
+    if (c.weatherLossPct) {
+      entries.push({ key: `${sideKey}-weather`, icon: '🌪️', label: `${c.defender} took ${Math.round(c.weatherLossPct)}% weather damage` });
+    }
+    if (c.leftoversHealHP && c.leftoversTarget) {
+      entries.push({ key: `${sideKey}-leftovers`, icon: '🍽️', label: `${c.leftoversTarget} healed ${c.leftoversHealHP} HP with Leftovers` });
+    }
+    if (c.screenSetUp) {
+      const screenName = c.screenSetUp.type.replace(/-/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+      entries.push({ key: `${sideKey}-screen`, icon: '🛡️', label: `${c.screenSetUp.user} set up ${screenName} (${c.screenSetUp.turnsRemaining} turns remaining)` });
+    }
+  }
+  return entries;
+}
+
+function EndOfTurnSummary({ turn }: { turn: Turn }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const bothRun = !!turn.playerAction.runApplied && !!turn.enemyAction.runApplied;
+  if (!bothRun) return null;
+
+  const entries = buildEotEntries(turn);
+  const ai = turn.eotSummary;
+  const hasContent = entries.length > 0 || ai?.nextAiMove;
+
+  if (!hasContent) return null;
+
+  return (
+    <div className="border-t border-neutral-800 mt-1">
+      <button
+        onClick={() => setCollapsed(prev => !prev)}
+        className="flex items-center gap-1 w-full py-1 px-1 text-[10px] text-neutral-400 hover:text-neutral-200 transition-colors"
+      >
+        <span className={`transition-transform inline-block ${collapsed ? '' : 'rotate-90'}`}>▶</span>
+        <span className="font-semibold">End of Turn</span>
+      </button>
+      {!collapsed && (
+        <div className="pl-4 pb-1.5 space-y-0.5">
+          {entries.map(e => (
+            <div key={e.key} className="text-[10px] text-amber-400 flex items-center gap-1">
+              <span>{e.icon}</span>
+              <span>{e.label}</span>
+            </div>
+          ))}
+          {ai?.nextAiMove && (
+            <div className="text-[10px] text-cyan-400 flex items-center gap-1 mt-0.5">
+              <span>🤖</span>
+              <span>
+                Next turn AI suggests: <strong>{ai.nextAiMove}</strong>
+                {ai.nextAiProb != null && ` (${Math.round(ai.nextAiProb * 100)}%)`}
+                {ai.nextAiTarget && ` on ${ai.nextAiTarget}`}
+                {ai.nextAiTargetPct != null && ` at ${Math.round(ai.nextAiTargetPct)}%`}
+              </span>
+            </div>
+          )}
+          {ai?.nextAiMoveProbs && ai.nextAiMoveNames && (
+            <div className="flex gap-2 mt-0.5 flex-wrap">
+              {ai.nextAiMoveNames.map((name, i) => {
+                const prob = ai.nextAiMoveProbs?.[i] ?? 0;
+                if (!name || prob <= 0) return null;
+                return (
+                  <span key={i} className="text-[9px] text-neutral-500">
+                    {name}: {Math.round(prob * 100)}%
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -500,6 +596,8 @@ export default function TurnCard({
         onSetRollIndex={idx => onUpdateEnemyAction({ selectedRollIndex: idx })}
         onSetFirstTurnOut={(a, d) => onUpdateEnemyAction({ attackerFirstTurnOut: a, defenderFirstTurnOut: d })}
       />
+
+      <EndOfTurnSummary turn={turn} />
     </div>
   );
 }

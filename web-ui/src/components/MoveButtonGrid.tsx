@@ -5,6 +5,7 @@ type Props = {
   selectedMove?: string;
   onSelectMove: (move: string | undefined) => void;
   aiMoveProbs?: number[];
+  moveDamageRanges?: Record<string, { minPct: number; maxPct: number } | null>;
   disabled?: boolean;
 };
 
@@ -16,12 +17,15 @@ function probColor(prob: number): string {
   return 'bg-teal-400/15 border-teal-400/20';
 }
 
-export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMoveProbs, disabled }: Props) {
+export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMoveProbs, moveDamageRanges, disabled }: Props) {
+  const hasDmg = moveDamageRanges && Object.keys(moveDamageRanges).length > 0;
+  const cellH = hasDmg ? 'h-10' : 'h-8';
+
   if (moves.length === 0) {
     return (
       <div className="grid grid-cols-2 gap-1 w-[160px]">
         {[0,1,2,3].map(i => (
-          <div key={i} className="h-8 rounded-lg border border-neutral-800 bg-neutral-900/30" />
+          <div key={i} className={`${cellH} rounded-lg border border-neutral-800 bg-neutral-900/30`} />
         ))}
       </div>
     );
@@ -34,20 +38,22 @@ export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMo
     <div className="grid grid-cols-2 gap-1 w-[160px]">
       {slots.slice(0, 4).map((move, i) => {
         if (!move) {
-          return <div key={i} className="h-8 rounded-lg border border-neutral-800 bg-neutral-900/30" />;
+          return <div key={i} className={`${cellH} rounded-lg border border-neutral-800 bg-neutral-900/30`} />;
         }
 
         const isSelected = move === selectedMove;
         const hasProb = aiMoveProbs && aiMoveProbs[i] !== undefined;
         const prob = hasProb ? aiMoveProbs![i] : 0;
         const probBg = hasProb ? probColor(prob) : '';
+        const dmg = moveDamageRanges?.[move];
+        const dmgLabel = dmg ? (dmg.minPct === dmg.maxPct ? `${dmg.minPct}%` : `${dmg.minPct}-${dmg.maxPct}%`) : null;
 
         return (
           <button
             key={i}
             onClick={() => !disabled && onSelectMove(isSelected ? undefined : move)}
             disabled={disabled}
-            className={`h-8 rounded-lg text-[10px] font-medium px-1 truncate transition border relative
+            className={`${cellH} rounded-lg text-[10px] font-medium px-1 transition border relative flex flex-col items-center justify-center
               ${isSelected
                 ? 'bg-blue-600 border-blue-500 text-white ring-1 ring-blue-400'
                 : hasProb
@@ -56,9 +62,14 @@ export default function MoveButtonGrid({ moves, selectedMove, onSelectMove, aiMo
               }
               ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
             `}
-            title={move + (hasProb ? ` (${(prob * 100).toFixed(1)}%)` : '')}
+            title={move + (hasProb ? ` (${(prob * 100).toFixed(1)}%)` : '') + (dmgLabel ? ` — dmg ${dmgLabel}` : '')}
           >
-            <span className="truncate">{move}</span>
+            <span className="truncate max-w-full leading-tight">{move}</span>
+            {dmgLabel && (
+              <span className={`text-[8px] leading-none ${isSelected ? 'text-blue-200' : 'text-amber-400'}`}>
+                {dmgLabel}
+              </span>
+            )}
             {hasProb && (
               <span className={`absolute top-0 right-0.5 text-[8px] font-bold ${isSelected ? 'text-blue-200' : 'text-teal-300'}`}>
                 {(prob * 100).toFixed(0)}%

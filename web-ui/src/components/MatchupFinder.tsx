@@ -66,7 +66,7 @@ export default function MatchupFinder({
   const [selectedMove, setSelectedMove] = useState<string | null>(null);
   const [matchupResults, setMatchupResults] = useState<MatchupResult[]>([]);
   const [tankResults, setTankResults] = useState<TankResult[]>([]);
-  const [activeMode, setActiveMode] = useState<'matchups' | 'tanks' | null>(null);
+  const [activeMode, setActiveMode] = useState<'matchups' | 'tanks' | 'both' | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hoveredSpecies, setHoveredSpecies] = useState<string | null>(null);
@@ -159,50 +159,81 @@ export default function MatchupFinder({
     }
   }
 
+  async function findBoth() {
+    if (!selectedEnemy || !selectedMove || !myText) return;
+    setLoading(true);
+    setError(null);
+    const enemyTextNorm = normalizeEnemyTrainerTextForBackend(enemyText);
+    try {
+      const [matchResp, tankResp] = await Promise.all([
+        fetch('/api/matchups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ myText, enemyText: enemyTextNorm, enemySpecies: selectedEnemy, gen }),
+        }),
+        fetch('/api/find-tanks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ myText, enemyText: enemyTextNorm, enemySpecies: selectedEnemy, enemyMove: selectedMove, gen }),
+        }),
+      ]);
+      if (!matchResp.ok) throw new Error(await matchResp.text() || `HTTP ${matchResp.status}`);
+      if (!tankResp.ok) throw new Error(await tankResp.text() || `HTTP ${tankResp.status}`);
+      const [matchData, tankData]: [MatchupResult[], TankResult[]] = await Promise.all([matchResp.json(), tankResp.json()]);
+      setMatchupResults(matchData);
+      setTankResults(tankData);
+      setActiveMode('both');
+    } catch (e: any) {
+      console.error('Find both failed:', e);
+      setError(e?.message || 'Find both failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function getMatchupColor(species: string): string {
+    const r = matchupResults.find(m => m.species.toLowerCase() === species.toLowerCase());
+    return MATCHUP_COLORS[r?.tier ?? 'none'];
+  }
+
+  function getTankColor(species: string): string {
+    const r = tankResults.find(t => t.species.toLowerCase() === species.toLowerCase());
+    return TANK_COLORS[r?.tier ?? 'none'];
+  }
+
   function getColorForSpecies(species: string): string {
-    if (activeMode === 'matchups' && matchupResults.length > 0) {
-      const r = matchupResults.find(
-        m => m.species.toLowerCase() === species.toLowerCase()
-      );
-      return MATCHUP_COLORS[r?.tier ?? 'none'];
-    }
-    if (activeMode === 'tanks' && tankResults.length > 0) {
-      const r = tankResults.find(
-        t => t.species.toLowerCase() === species.toLowerCase()
-      );
-      return TANK_COLORS[r?.tier ?? 'none'];
-    }
+    if (activeMode === 'matchups' && matchupResults.length > 0) return getMatchupColor(species);
+    if (activeMode === 'tanks' && tankResults.length > 0) return getTankColor(species);
     return '';
   }
 
   function getTooltip(species: string): string {
-    if (activeMode === 'matchups') {
-      const r = matchupResults.find(
-        m => m.species.toLowerCase() === species.toLowerCase()
-      );
-      if (!r || r.tier === 'none') return `${species}: no good matchup`;
-      const speedNote = r.mySpeed >= r.enemySpeed ? 'outspeeds' : 'slower';
-      return `${species} (${speedNote}, spd ${r.mySpeed} vs ${r.enemySpeed})\nBest: ${r.bestMove} — ${r.bestMoveDmgPct}% max dmg\nEnemy best: ${r.enemyBestMove} — ${r.enemyBestDmgPct}%`;
+    const parts: string[] = [];
+    if (activeMode === 'matchups' || activeMode === 'both') {
+      const r = matchupResults.find(m => m.species.toLowerCase() === species.toLowerCase());
+      if (r && r.tier !== 'none') {
+        const speedNote = r.mySpeed >= r.enemySpeed ? 'outspeeds' : 'slower';
+        parts.push(`Offense: ${r.bestMove} — ${r.bestMoveDmgPct}% max (${speedNote})`);
+      } else {
+        parts.push('Offense: no good matchup');
+      }
     }
-    if (activeMode === 'tanks') {
-      const r = tankResults.find(
-        t => t.species.toLowerCase() === species.toLowerCase()
-      );
-      if (!r || r.tier === 'none') return `${species}: folds quickly`;
-      return `${species}: survives ${r.hitsToKO} hits (${r.dmgPctPerHit}% per hit)`;
+    if (activeMode === 'tanks' || activeMode === 'both') {
+      const r = tankResults.find(t => t.species.toLowerCase() === species.toLowerCase());
+      if (r && r.tier !== 'none') {
+        parts.push(`Tank: survives ${r.hitsToKO} hits (${r.dmgPctPerHit}%/hit)`);
+      } else {
+        parts.push('Tank: folds quickly');
+      }
     }
-    return species;
+    return parts.length > 0 ? `${species}\n${parts.join('\n')}` : species;
   }
 
-  const activeLegend = activeMode === 'matchups' ? MATCHUP_LEGEND
-    : activeMode === 'tanks' ? TANK_LEGEND
-    : null;
+  const showMatchupLegend = activeMode === 'matchups' || activeMode === 'both';
+  const showTankLegend = activeMode === 'tanks' || activeMode === 'both';
 
-  const resultCount = activeMode === 'matchups'
-    ? matchupResults.filter(r => r.tier !== 'none').length
-    : activeMode === 'tanks'
-    ? tankResults.filter(r => r.tier !== 'none').length
-    : 0;
+  const matchupCount = matchupResults.filter(r => r.tier !== 'none').length;
+  const tankCount = tankResults.filter(r => r.tier !== 'none').length;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -213,25 +244,44 @@ export default function MatchupFinder({
             Your Collection
             {activeMode && (
               <span className="text-neutral-400 font-normal ml-2">
-                — {activeMode === 'matchups' ? 'offense tiers' : 'tankiness'} vs {selectedEnemy}
-                {activeMode === 'tanks' && selectedMove && ` (${selectedMove})`}
-                {resultCount > 0 && ` · ${resultCount} highlighted`}
+                — {activeMode === 'matchups' ? 'offense tiers' : activeMode === 'tanks' ? 'tankiness' : 'offense + tankiness'} vs {selectedEnemy}
+                {(activeMode === 'tanks' || activeMode === 'both') && selectedMove && ` (${selectedMove})`}
+                {activeMode === 'both' && ` · ${matchupCount} offense, ${tankCount} tanks`}
+                {activeMode === 'matchups' && matchupCount > 0 && ` · ${matchupCount} highlighted`}
+                {activeMode === 'tanks' && tankCount > 0 && ` · ${tankCount} highlighted`}
               </span>
             )}
           </h2>
 
           {/* Legend */}
-          {activeLegend && (
+          {(showMatchupLegend || showTankLegend) && (
             <div className="flex flex-wrap gap-3 text-xs text-neutral-300 mb-3 pb-3 border-b border-neutral-800">
-              {activeLegend.map(item => (
-                <div key={item.tier} className="flex items-center gap-1.5">
-                  <span className={`w-3 h-3 rounded-sm ${item.color}`} />
-                  <span>{item.label}</span>
-                </div>
-              ))}
+              {showMatchupLegend && (
+                <>
+                  {activeMode === 'both' && <span className="font-semibold text-neutral-400 mr-1">Offense:</span>}
+                  {MATCHUP_LEGEND.map(item => (
+                    <div key={item.tier} className="flex items-center gap-1.5">
+                      <span className={`w-3 h-3 rounded-sm ${item.color}`} />
+                      <span>{item.label}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+              {activeMode === 'both' && <span className="text-neutral-600 mx-1">|</span>}
+              {showTankLegend && (
+                <>
+                  {activeMode === 'both' && <span className="font-semibold text-neutral-400 mr-1">Tank:</span>}
+                  {TANK_LEGEND.map(item => (
+                    <div key={item.tier} className="flex items-center gap-1.5">
+                      <span className={`w-3 h-3 rounded-sm ${item.color}`} />
+                      <span>{item.label}</span>
+                    </div>
+                  ))}
+                </>
+              )}
               <div className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded-sm bg-neutral-700 border border-neutral-600" />
-                <span>No matchup</span>
+                <span>None</span>
               </div>
             </div>
           )}
@@ -239,8 +289,32 @@ export default function MatchupFinder({
           {myCollection.length > 0 ? (
             <div className="flex flex-wrap gap-2">
               {myCollection.map(name => {
-                const colorCls = getColorForSpecies(name);
                 const tip = getTooltip(name);
+
+                if (activeMode === 'both') {
+                  const mColor = getMatchupColor(name);
+                  const tColor = getTankColor(name);
+                  return (
+                    <div
+                      key={name}
+                      className="relative flex flex-col items-center p-1.5 rounded-xl transition cursor-default overflow-hidden"
+                      title={tip}
+                      onMouseEnter={() => setHoveredSpecies(name)}
+                      onMouseLeave={() => setHoveredSpecies(null)}
+                    >
+                      <div className={`absolute inset-0 rounded-xl ${mColor || 'bg-neutral-800/50'}`} style={{ clipPath: 'inset(0 50% 0 0)' }} />
+                      <div className={`absolute inset-0 rounded-xl ${tColor || 'bg-neutral-800/50'}`} style={{ clipPath: 'inset(0 0 0 50%)' }} />
+                      <div className="relative z-10 flex flex-col items-center">
+                        <PokemonIcon name={name} size={40} />
+                        <span className="text-[9px] text-neutral-300 truncate max-w-[56px] mt-0.5">
+                          {name}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const colorCls = getColorForSpecies(name);
                 return (
                   <div
                     key={name}
@@ -335,7 +409,7 @@ export default function MatchupFinder({
             )}
 
             {/* Action Buttons */}
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
               <button
                 onClick={findMatchups}
                 disabled={!selectedEnemy || !myText || loading}
@@ -350,6 +424,14 @@ export default function MatchupFinder({
                 title={!selectedMove ? 'Select an enemy move first' : ''}
               >
                 {loading && activeMode === 'tanks' ? 'Calculating...' : 'Find Tanks'}
+              </button>
+              <button
+                onClick={findBoth}
+                disabled={!selectedEnemy || !selectedMove || !myText || loading}
+                className="px-5 py-2 rounded-xl text-sm font-semibold bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                title={!selectedMove ? 'Select an enemy move first' : 'Run matchups + tanks together'}
+              >
+                {loading && activeMode === 'both' ? 'Calculating...' : 'Both'}
               </button>
             </div>
 
@@ -368,41 +450,46 @@ export default function MatchupFinder({
 
 function HoverDetail({ species, mode, matchup, tank }: {
   species: string;
-  mode: 'matchups' | 'tanks';
+  mode: 'matchups' | 'tanks' | 'both';
   matchup?: MatchupResult;
   tank?: TankResult;
 }) {
-  if (mode === 'matchups' && matchup && matchup.tier !== 'none') {
-    const speedLabel = matchup.mySpeed >= matchup.enemySpeed ? 'Outspeeds' : 'Slower';
-    return (
-      <div className="mt-3 p-3 rounded-xl bg-neutral-800/80 border border-neutral-700 text-xs space-y-1">
-        <div className="font-semibold text-neutral-200">{species}</div>
-        <div className="text-neutral-400">
-          {speedLabel} (Speed: {matchup.mySpeed} vs {matchup.enemySpeed})
-        </div>
-        <div>
-          Best move: <span className="text-white font-medium">{matchup.bestMove}</span>
-          {' '}&mdash; {matchup.bestMoveDmgPct}% max, {matchup.bestMoveMinPct}% min
-        </div>
-        <div>
-          Enemy best: <span className="text-white font-medium">{matchup.enemyBestMove || '(none)'}</span>
-          {matchup.enemyBestMove && <> &mdash; {matchup.enemyBestDmgPct}%</>}
-        </div>
-      </div>
-    );
-  }
-  if (mode === 'tanks' && tank && tank.tier !== 'none') {
-    return (
-      <div className="mt-3 p-3 rounded-xl bg-neutral-800/80 border border-neutral-700 text-xs space-y-1">
-        <div className="font-semibold text-neutral-200">{species}</div>
-        <div>
-          Takes <span className="text-white font-medium">{tank.hitsToKO}</span> hits to KO
-        </div>
-        <div className="text-neutral-400">
-          {tank.dmgPctPerHit}% damage per hit
-        </div>
-      </div>
-    );
-  }
-  return null;
+  const showMatchup = (mode === 'matchups' || mode === 'both') && matchup && matchup.tier !== 'none';
+  const showTank = (mode === 'tanks' || mode === 'both') && tank && tank.tier !== 'none';
+
+  if (!showMatchup && !showTank) return null;
+
+  const speedLabel = matchup ? (matchup.mySpeed >= matchup.enemySpeed ? 'Outspeeds' : 'Slower') : '';
+
+  return (
+    <div className="mt-3 p-3 rounded-xl bg-neutral-800/80 border border-neutral-700 text-xs space-y-1">
+      <div className="font-semibold text-neutral-200">{species}</div>
+      {showMatchup && matchup && (
+        <>
+          <div className="text-neutral-400">
+            {speedLabel} (Speed: {matchup.mySpeed} vs {matchup.enemySpeed})
+          </div>
+          <div>
+            Best move: <span className="text-white font-medium">{matchup.bestMove}</span>
+            {' '}&mdash; {matchup.bestMoveDmgPct}% max, {matchup.bestMoveMinPct}% min
+          </div>
+          <div>
+            Enemy best: <span className="text-white font-medium">{matchup.enemyBestMove || '(none)'}</span>
+            {matchup.enemyBestMove && <> &mdash; {matchup.enemyBestDmgPct}%</>}
+          </div>
+        </>
+      )}
+      {showMatchup && showTank && <div className="border-t border-neutral-700 my-1" />}
+      {showTank && tank && (
+        <>
+          <div>
+            Takes <span className="text-white font-medium">{tank.hitsToKO}</span> hits to KO
+          </div>
+          <div className="text-neutral-400">
+            {tank.dmgPctPerHit}% damage per hit
+          </div>
+        </>
+      )}
+    </div>
+  );
 }

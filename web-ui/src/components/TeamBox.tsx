@@ -18,6 +18,7 @@ export type TeamMember = {
   maxHP?: number;
   curHP?: number;
   item?: string;
+  speed?: number;
   berry?: { name: string; consumed: boolean } | undefined;
   status?: { type: StatusType; toxicStage?: number } | undefined;
   statStages?: StatStages;
@@ -233,11 +234,11 @@ export default function TeamBox({
 
               {/* Stat Stages Display */}
               {m?.name && (
-                <div className="mt-1 text-[10px] text-neutral-400 flex gap-2">
+                <div className="mt-1 text-[10px] text-neutral-400 grid grid-cols-3 gap-x-2 gap-y-0.5">
                   <span>Atk: <span className={getStatStageColor(m.statStages?.atk ?? 0)}>{formatStatStage(m.statStages?.atk ?? 0)}</span></span>
                   <span>Def: <span className={getStatStageColor(m.statStages?.def ?? 0)}>{formatStatStage(m.statStages?.def ?? 0)}</span></span>
-                  <span>SpAtk: <span className={getStatStageColor(m.statStages?.spatk ?? 0)}>{formatStatStage(m.statStages?.spatk ?? 0)}</span></span>
-                  <span>SpDef: <span className={getStatStageColor(m.statStages?.spdef ?? 0)}>{formatStatStage(m.statStages?.spdef ?? 0)}</span></span>
+                  <span>SpA: <span className={getStatStageColor(m.statStages?.spatk ?? 0)}>{formatStatStage(m.statStages?.spatk ?? 0)}</span></span>
+                  <span>SpD: <span className={getStatStageColor(m.statStages?.spdef ?? 0)}>{formatStatStage(m.statStages?.spdef ?? 0)}</span></span>
                   <span>Spd: <span className={getStatStageColor(m.statStages?.spd ?? 0)}>{formatStatStage(m.statStages?.spd ?? 0)}</span></span>
                 </div>
               )}
