@@ -307,6 +307,7 @@ type TurnCardProps = {
   enemyDefenderInfo?: MemberLookup;
   myTeamMembers?: TeamMember[];
   enemyTeamMembers?: TeamMember[];
+  aliveMyMembers?: TeamMember[];
   aliveEnemyMembers?: TeamMember[];
   enemySwitchAnnotations?: Record<string, SwitchAnnotation>;
   onUpdatePlayerAction: (update: Partial<SubAction>) => void;
@@ -328,7 +329,7 @@ export default function TurnCard({
   playerAttackerInfo, playerDefenderInfo,
   enemyAttackerInfo, enemyDefenderInfo,
   myTeamMembers, enemyTeamMembers,
-  aliveEnemyMembers, enemySwitchAnnotations,
+  aliveMyMembers, aliveEnemyMembers, enemySwitchAnnotations,
   onUpdatePlayerAction, onUpdateEnemyAction,
   onCalcPlayer, onCalcEnemy,
   onRunPlayer, onRunEnemy,
@@ -360,6 +361,7 @@ export default function TurnCard({
         defenderInfo={playerDefenderInfo}
         attackerTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
         defenderTeam={[...(myTeamMembers ?? []), ...(enemyTeamMembers ?? [])]}
+        switchTeam={aliveMyMembers}
         onSetSwitch={(name, src) => onUpdatePlayerAction({ switchTo: name, switchSource: src })}
         onClearSwitch={() => onUpdatePlayerAction({ switchTo: undefined, switchSource: undefined })}
         onSetAttacker={(name, src) => {

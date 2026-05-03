@@ -894,6 +894,9 @@ export default function App() {
                   const eAction = turn.enemyAction;
                   const myMembers = myTeam.filter(Boolean).map(m => ({ name: m.name, source: 'my' as const }));
                   const enemyMembers = enemyTeam.filter(Boolean).map(m => ({ name: m.name, source: 'enemy' as const }));
+                  const aliveMyMembers = myTeam
+                    .filter(m => m && m.pct > 0)
+                    .map(m => ({ name: m.name, source: 'my' as const }));
                   const aliveEnemyMembers = enemyTeam
                     .filter(m => m && m.pct > 0)
                     .map(m => ({ name: m.name, source: 'enemy' as const }));
@@ -928,6 +931,7 @@ export default function App() {
                       enemyDefenderInfo={getMemberInfo(eAction.defenderName, eAction.defenderSource)}
                       myTeamMembers={myMembers}
                       enemyTeamMembers={enemyMembers}
+                      aliveMyMembers={aliveMyMembers}
                       aliveEnemyMembers={aliveEnemyMembers}
                       enemySwitchAnnotations={enemySwitchAnnotations}
                       onUpdatePlayerAction={u => updateSubAction(idx, 'player', u)}

@@ -96,14 +96,16 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, 
       throw e;
     }
   
-    const rollsHP = (res.damage as number[]).map(n => Math.max(0, n));
+    const rawDmg = Array.isArray(res.damage) ? res.damage as number[] : [res.damage as number];
+    const rollsHP = rawDmg.map(n => Math.max(0, n));
     const [minHP, maxHPdmg] = res.range();
     const defMaxHP = D.maxHP();
     const pct = (n: number) => Math.round((100 * n) / defMaxHP);
     const rollsPct = rollsHP.map(pct);
   
     const critRes = calculate(gen, A, D, new Move(gen, moveName, { isCrit: true }), field);
-    const critRollsHP = (critRes.damage as number[]).map(n => Math.max(0, n));
+    const rawCritDmg = Array.isArray(critRes.damage) ? critRes.damage as number[] : [critRes.damage as number];
+    const critRollsHP = rawCritDmg.map(n => Math.max(0, n));
     const [cminHP, cmaxHPdmg] = critRes.range();
     const critRollsPct = critRollsHP.map(pct);
   
