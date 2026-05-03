@@ -60,6 +60,23 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, 
     });
 }   
   
+  function flattenDamage(damage: unknown): number[] {
+    if (typeof damage === 'number') return [Math.max(0, damage)];
+    if (!Array.isArray(damage)) return [0];
+    if (damage.length === 0) return [0];
+    // Multi-hit moves return number[][] — sum each roll set
+    if (Array.isArray(damage[0])) {
+      const hits = damage as number[][];
+      const rollCount = hits[0].length;
+      const summed: number[] = new Array(rollCount).fill(0);
+      for (const hitRolls of hits) {
+        for (let i = 0; i < rollCount; i++) summed[i] += (hitRolls[i] ?? 0);
+      }
+      return summed.map(n => Math.max(0, n));
+    }
+    return (damage as number[]).map(n => Math.max(0, typeof n === 'number' ? n : 0));
+  }
+
   export function damageSummary(
     genNum: number,
     atk: SimpleSet,
@@ -80,33 +97,38 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, 
     const move = new Move(gen, moveName);
     const field = new Field(fieldInput ?? {});
   
+    const defMaxHP = D.maxHP();
+    const pct = (n: number) => defMaxHP > 0 ? Math.round((100 * n) / defMaxHP) : 0;
+
     let res;
     try {
       res = calculate(gen, A, D, move, field);
     } catch (e) {
-      console.error('[calc error] move:', moveName);
-      console.error('[attacker]', {
-        species: A.species.name, level: A.level, item: A.item, ability: A.ability, nature: A.nature,
-        status: (A as any).status, ivs: (A as any).ivs, evs: (A as any).evs,
-      });
-      console.error('[defender]', {
-        species: D.species.name, level: D.level, item: D.item, ability: D.ability, nature: D.nature,
-        status: (D as any).status, ivs: (D as any).ivs, evs: (D as any).evs,
-      });
-      throw e;
+      console.error('[calc error] move:', moveName, (e as any)?.message);
+      // Immune or unsupported — return all-zero result
+      return {
+        defenderMaxHP: defMaxHP,
+        minPct: 0, maxPct: 0, rollsPct: [0], rollsHP: [0],
+        critMinPct: 0, critMaxPct: 0, critRollsPct: [0], critRollsHP: [0],
+        desc: `${A.species.name} used ${moveName} on ${D.species.name} — no effect`,
+      };
     }
-  
-    const rawDmg = Array.isArray(res.damage) ? res.damage as number[] : [res.damage as number];
-    const rollsHP = rawDmg.map(n => Math.max(0, n));
-    const [minHP, maxHPdmg] = res.range();
-    const defMaxHP = D.maxHP();
-    const pct = (n: number) => Math.round((100 * n) / defMaxHP);
+
+    const rollsHP = flattenDamage(res.damage);
     const rollsPct = rollsHP.map(pct);
-  
-    const critRes = calculate(gen, A, D, new Move(gen, moveName, { isCrit: true }), field);
-    const rawCritDmg = Array.isArray(critRes.damage) ? critRes.damage as number[] : [critRes.damage as number];
-    const critRollsHP = rawCritDmg.map(n => Math.max(0, n));
-    const [cminHP, cmaxHPdmg] = critRes.range();
+    let minHP: number, maxHPdmg: number;
+    try { [minHP, maxHPdmg] = res.range(); } catch { minHP = rollsHP[0] ?? 0; maxHPdmg = rollsHP[rollsHP.length - 1] ?? 0; }
+
+    let critRollsHP: number[];
+    let cminHP: number, cmaxHPdmg: number;
+    try {
+      const critRes = calculate(gen, A, D, new Move(gen, moveName, { isCrit: true }), field);
+      critRollsHP = flattenDamage(critRes.damage);
+      try { [cminHP, cmaxHPdmg] = critRes.range(); } catch { cminHP = critRollsHP[0] ?? 0; cmaxHPdmg = critRollsHP[critRollsHP.length - 1] ?? 0; }
+    } catch {
+      critRollsHP = [0];
+      cminHP = 0; cmaxHPdmg = 0;
+    }
     const critRollsPct = critRollsHP.map(pct);
   
     return {
@@ -119,7 +141,7 @@ function toCalcPokemon(gen: ReturnType<typeof Generations.get>, set: SimpleSet, 
       critMaxPct: pct(cmaxHPdmg),
       critRollsPct,
       critRollsHP,
-      desc: res.desc(),
+      desc: (() => { try { return res.desc(); } catch { return ''; } })(),
     };
   }
   

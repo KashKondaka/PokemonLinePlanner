@@ -342,14 +342,13 @@ app.post('/api/calc', (req, res) => {
     const pA = toCalcPokemon(g, A, attackerBoosts);
     const pD = toCalcPokemon(g, D, defenderBoosts);
     const mv = new Move(g, String(move));
-    const fld = new Field({});
-
-    const result = calculate(g, pA, pD, mv, fld);
-    const resultCrit = calculate(g, pA, pD, new Move(g, String(move), { isCrit: true }), fld);
 
     // Use rolls from the summary which already has boosts applied, and apply all modifiers
     const rawRolls = sum.rollsHP.map(r => Math.floor(r * totalModifier));
     const rawRollsCrit = sum.critRollsHP.map(r => Math.floor(r * totalModifier));
+
+    let descText = '';
+    try { const result = calculate(g, pA, pD, mv, new Field({})); descText = result.desc(); } catch { /* immune/no effect */ }
 
     const debug = {
       attacker: {
@@ -359,7 +358,7 @@ app.post('/api/calc', (req, res) => {
         ability: String(pA.ability || ''),
         item: String(pA.item || ''),
         status: (pA as any).status || '',
-        stats: (pA as any).stats, // {hp, at, df, sa, sd, sp}
+        stats: (pA as any).stats,
         ivs: (pA as any).ivs,
         evs: (pA as any).evs,
       },
@@ -385,7 +384,7 @@ app.post('/api/calc', (req, res) => {
         normal: rawRolls,
         crit: rawRollsCrit,
       },
-      desc: result.desc(),
+      desc: descText,
     };
 
     const payload = {
